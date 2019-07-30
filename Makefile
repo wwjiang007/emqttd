@@ -1,57 +1,128 @@
-PROJECT = emqttd
-PROJECT_DESCRIPTION = Erlang MQTT Broker
-PROJECT_VERSION = 2.3.11
+## shallow clone for speed
 
-DEPS = goldrush gproc lager esockd ekka mochiweb pbkdf2 lager_syslog bcrypt clique jsx
+REBAR_GIT_CLONE_OPTIONS += --depth 1
+export REBAR_GIT_CLONE_OPTIONS
 
-dep_goldrush     = git https://github.com/basho/goldrush 0.1.9
-dep_gproc        = git https://github.com/uwiger/gproc 0.8.0
-dep_getopt       = git https://github.com/jcomellas/getopt v0.8.2
-dep_lager        = git https://github.com/basho/lager 3.2.4
-dep_esockd       = git https://github.com/emqtt/esockd v5.2.2
-dep_ekka         = git https://github.com/emqtt/ekka v0.2.3
-dep_mochiweb     = git https://github.com/emqtt/mochiweb v4.2.2
-dep_pbkdf2       = git https://github.com/emqtt/pbkdf2 2.0.1
-dep_lager_syslog = git https://github.com/basho/lager_syslog 3.0.1
-dep_bcrypt       = git https://github.com/smarkets/erlang-bcrypt master
-dep_clique       = git https://github.com/emqtt/clique v0.3.10
-dep_jsx          = git https://github.com/talentdeficit/jsx v2.8.3
+SUITES_FILES := $(shell find test -name '*_SUITE.erl')
 
-ERLC_OPTS += +debug_info
-ERLC_OPTS += +'{parse_transform, lager_transform}'
+CT_SUITES := $(foreach value,$(SUITES_FILES),$(shell val=$$(basename $(value) .erl); echo $${val%_*}))
 
-NO_AUTOPATCH = cuttlefish
+CT_NODE_NAME = emqxct@127.0.0.1
 
-BUILD_DEPS = cuttlefish
-dep_cuttlefish = git https://github.com/emqtt/cuttlefish v2.0.11
+RUN_NODE_NAME = emqxdebug@127.0.0.1
 
-TEST_DEPS = emqttc emq_dashboard
-dep_emqttc = git https://github.com/emqtt/emqttc
-dep_emq_dashboard = git https://github.com/emqtt/emq_dashboard develop
+.PHONY: all
+all: compile
 
-TEST_ERLC_OPTS += +debug_info
-TEST_ERLC_OPTS += +'{parse_transform, lager_transform}'
+.PHONY: run
+run: run_setup unlock
+	@rebar3 as test get-deps
+	@rebar3 as test auto --name $(RUN_NODE_NAME) --script test/run_emqx.escript
 
-EUNIT_OPTS = verbose
-# EUNIT_ERL_OPTS =
+.PHONY: run_setup
+run_setup:
+	@erl -noshell -eval \
+	    "{ok, [[HOME]]} = init:get_argument(home), \
+		 FilePath = HOME ++ \"/.config/rebar3/rebar.config\", \
+		 case file:consult(FilePath) of \
+             {ok, Term} -> \
+				 NewTerm = case lists:keyfind(plugins, 1, Term) of \
+	                           false -> [{plugins, [rebar3_auto]} | Term]; \
+	                	  	   {plugins, OldPlugins} -> \
+		          		           NewPlugins0 = OldPlugins -- [rebar3_auto], \
+	             	     	       NewPlugins = [rebar3_auto | NewPlugins0], \
+                                   lists:keyreplace(plugins, 1, Term, {plugins, NewPlugins}) \
+	                       end, \
+	             ok = file:write_file(FilePath, [io_lib:format(\"~p.\n\", [I]) || I <- NewTerm]); \
+            _Enoent -> \
+		        os:cmd(\"mkdir -p ~/.config/rebar3/ \"), \
+	            NewTerm=[{plugins, [rebar3_auto]}], \
+	            ok = file:write_file(FilePath, [io_lib:format(\"~p.\n\", [I]) || I <- NewTerm]) \
+	     end, \
+	     halt(0)."
 
-CT_SUITES = emqttd emqttd_access emqttd_lib emqttd_inflight emqttd_mod \
-            emqttd_net emqttd_mqueue emqttd_protocol emqttd_topic \
-            emqttd_router emqttd_trie emqttd_vm emqttd_config
+.PHONY: shell
+shell:
+	@rebar3 as test auto
 
-CT_OPTS = -cover test/ct.cover.spec -erl_args -name emqttd_ct@127.0.0.1
+compile: unlock
+	@rebar3 compile
 
-COVER = true
+unlock:
+	@rebar3 unlock
 
-PLT_APPS = sasl asn1 ssl syntax_tools runtime_tools crypto xmerl os_mon inets public_key ssl lager compiler mnesia
-DIALYZER_DIRS := ebin/
-DIALYZER_OPTS := --verbose --statistics -Werror_handling \
-                 -Wrace_conditions #-Wunmatched_returns
+clean: distclean
 
-include erlang.mk
+## Cuttlefish escript is built by default when cuttlefish app (as dependency) was built
+CUTTLEFISH_SCRIPT := _build/default/lib/cuttlefish/cuttlefish
 
-app:: rebar.config
+.PHONY: cover
+cover:
+	@rebar3 cover
 
-app.config::
-	./deps/cuttlefish/cuttlefish -l info -e etc/ -c etc/emq.conf -i priv/emq.schema -d data/
+.PHONY: coveralls
+coveralls:
+	@rebar3 coveralls send
 
+.PHONY: xref
+xref:
+	@rebar3 xref
+
+.PHONY: deps
+deps:
+	@rebar3 get-deps
+
+.PHONY: eunit
+eunit:
+	@rebar3 eunit -v
+
+.PHONY: ct_setup
+ct_setup:
+	rebar3 as test compile
+	@mkdir -p data
+	@if [ ! -f data/loaded_plugins ]; then touch data/loaded_plugins; fi
+	@ln -s -f '../../../../etc' _build/test/lib/emqx/
+	@ln -s -f '../../../../data' _build/test/lib/emqx/
+
+.PHONY: ct
+ct: ct_setup
+	@rebar3 ct -v --readable=false --name $(CT_NODE_NAME) --suite=$(shell echo $(foreach var,$(CT_SUITES),test/$(var)_SUITE) | tr ' ' ',')
+
+## Run one single CT with rebar3
+## e.g. make ct-one-suite suite=emqx_bridge
+.PHONY: $(SUITES:%=ct-%)
+$(CT_SUITES:%=ct-%): ct_setup
+	@rebar3 ct -v --readable=false --name $(CT_NODE_NAME) --suite=$(@:ct-%=%)_SUITE
+
+.PHONY: app.config
+app.config: $(CUTTLEFISH_SCRIPT) etc/gen.emqx.conf
+	$(CUTTLEFISH_SCRIPT) -l info -e etc/ -c etc/gen.emqx.conf -i priv/emqx.schema -d data/
+
+$(CUTTLEFISH_SCRIPT):
+	@rebar3 get-deps
+	@if [ ! -f cuttlefish ]; then make -C _build/default/lib/cuttlefish; fi
+
+bbmustache:
+	@git clone https://github.com/soranoba/bbmustache.git && cd bbmustache && ./rebar3 compile && cd ..
+
+# This hack is to generate a conf file for testing
+# relx overlay is used for release
+etc/gen.emqx.conf: bbmustache etc/emqx.conf
+	@erl -noshell -pa bbmustache/_build/default/lib/bbmustache/ebin -eval \
+		"{ok, Temp} = file:read_file('etc/emqx.conf'), \
+		{ok, Vars0} = file:consult('vars'), \
+		Vars = [{atom_to_list(N), list_to_binary(V)} || {N, V} <- Vars0], \
+		Targ = bbmustache:render(Temp, Vars), \
+		ok = file:write_file('etc/gen.emqx.conf', Targ), \
+		halt(0)."
+
+.PHONY: gen-clean
+gen-clean:
+	@rm -rf bbmustache
+	@rm -f etc/gen.emqx.conf etc/emqx.conf.rendered
+
+.PHONY: distclean
+distclean: gen-clean
+	@rm -rf Mnesia.*
+	@rm -rf _build cover deps logs log data
+	@rm -f rebar.lock compile_commands.json cuttlefish erl_crash.dump
