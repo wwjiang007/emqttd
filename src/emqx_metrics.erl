@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_metrics).
 
@@ -58,11 +60,11 @@
         , code_change/3
         ]).
 
+-export_type([metric_idx/0]).
+
 -opaque(metric_idx() :: 1..1024).
 
 -type(metric_name() :: atom() | string() | binary()).
-
--export_type([metric_idx/0]).
 
 -define(MAX_SIZE, 1024).
 -define(RESERVED_IDX, 256).
@@ -92,12 +94,14 @@
     {counter, 'packets.puback.missed'},         % PUBACK packets missed
     {counter, 'packets.pubrec.received'},       % PUBREC packets received
     {counter, 'packets.pubrec.sent'},           % PUBREC packets sent
+    {counter, 'packets.pubrec.inuse'},          % PUBREC packet_id inuse
     {counter, 'packets.pubrec.missed'},         % PUBREC packets missed
     {counter, 'packets.pubrel.received'},       % PUBREL packets received
     {counter, 'packets.pubrel.sent'},           % PUBREL packets sent
     {counter, 'packets.pubrel.missed'},         % PUBREL packets missed
     {counter, 'packets.pubcomp.received'},      % PUBCOMP packets received
     {counter, 'packets.pubcomp.sent'},          % PUBCOMP packets sent
+    {counter, 'packets.pubcomp.inuse'},         % PUBCOMP packet_id inuse
     {counter, 'packets.pubcomp.missed'},        % PUBCOMP packets missed
     {counter, 'packets.subscribe.received'},    % SUBSCRIBE Packets received
     {counter, 'packets.subscribe.error'},       % SUBSCRIBE error
@@ -132,9 +136,14 @@
     {counter, 'messages.forward'}        % Messages forward
 ]).
 
+-define(CHAN_METRICS, [
+    {counter, 'channel.gc.cnt'}
+]).
+
 -define(MQTT_METRICS, [
     {counter, 'auth.mqtt.anonymous'}
 ]).
+
 
 -record(state, {next_idx = 1}).
 
@@ -149,9 +158,9 @@ start_link() ->
 stop() ->
     gen_server:stop(?SERVER).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Metrics API
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 -spec(new(metric_name()) -> ok).
 new(Name) ->
@@ -255,12 +264,12 @@ update_counter(Name, Value) ->
            end,
     counters:add(CRef, CIdx, Value).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Inc Received/Sent metrics
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 %% @doc Inc packets received.
--spec(inc_recv(emqx_mqtt_types:packet()) -> ok).
+-spec(inc_recv(emqx_types:packet()) -> ok).
 inc_recv(Packet) ->
     inc('packets.received'),
     do_inc_recv(Packet).
@@ -272,7 +281,8 @@ do_inc_recv(?PUBLISH_PACKET(QoS, _PktId)) ->
     case QoS of
         ?QOS_0 -> inc('messages.qos0.received');
         ?QOS_1 -> inc('messages.qos1.received');
-        ?QOS_2 -> inc('messages.qos2.received')
+        ?QOS_2 -> inc('messages.qos2.received');
+        _ -> ok
     end,
     inc('packets.publish.received');
 do_inc_recv(?PACKET(?PUBACK)) ->
@@ -293,13 +303,12 @@ do_inc_recv(?PACKET(?DISCONNECT)) ->
     inc('packets.disconnect.received');
 do_inc_recv(?PACKET(?AUTH)) ->
     inc('packets.auth.received');
-do_inc_recv(_Packet) ->
-    ignore.
+do_inc_recv(_Packet) -> ok.
 
 %% @doc Inc packets sent. Will not count $SYS PUBLISH.
--spec(inc_sent(emqx_mqtt_types:packet()) -> ok | ignore).
+-spec(inc_sent(emqx_types:packet()) -> ok).
 inc_sent(?PUBLISH_PACKET(_QoS, <<"$SYS/", _/binary>>, _, _)) ->
-    ignore;
+    ok;
 inc_sent(Packet) ->
     inc('packets.sent'),
     do_inc_sent(Packet).
@@ -340,12 +349,11 @@ do_inc_sent(?PACKET(?DISCONNECT)) ->
     inc('packets.disconnect.sent');
 do_inc_sent(?PACKET(?AUTH)) ->
     inc('packets.auth.sent');
-do_inc_sent(_Packet) ->
-    ignore.
+do_inc_sent(_Packet) -> ok.
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% gen_server callbacks
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 init([]) ->
     % Create counters array
@@ -356,10 +364,10 @@ init([]) ->
     % Store reserved indices
     lists:foreach(fun({Type, Name}) ->
                           Idx = reserved_idx(Name),
-                          Metric = #metric{name = Name, type = Type, idx = reserved_idx(Name)},
+                          Metric = #metric{name = Name, type = Type, idx = Idx},
                           true = ets:insert(?TAB, Metric),
                           ok = counters:put(CRef, Idx, 0)
-                  end,?BYTES_METRICS ++ ?PACKET_METRICS ++ ?MESSAGE_METRICS ++ ?MQTT_METRICS),
+                  end,?BYTES_METRICS ++ ?PACKET_METRICS ++ ?MESSAGE_METRICS ++ ?CHAN_METRICS ++ ?MQTT_METRICS),
     {ok, #state{next_idx = ?RESERVED_IDX + 1}, hibernate}.
 
 handle_call({create, Type, Name}, _From, State = #state{next_idx = ?MAX_SIZE}) ->
@@ -395,9 +403,9 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Internal functions
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 reserved_idx('bytes.received')               -> 01;
 reserved_idx('bytes.sent')                   -> 02;
@@ -451,4 +459,8 @@ reserved_idx('messages.dropped')             -> 49;
 reserved_idx('messages.expired')             -> 50;
 reserved_idx('messages.forward')             -> 51;
 reserved_idx('auth.mqtt.anonymous')          -> 52;
+reserved_idx('channel.gc.cnt')               -> 53;
+reserved_idx('packets.pubrec.inuse')         -> 54;
+reserved_idx('packets.pubcomp.inuse')        -> 55;
 reserved_idx(_)                              -> undefined.
+

@@ -25,31 +25,38 @@
 
 -export([ parse/1
         , parse/2
+        , serialize_fun/0
+        , serialize_fun/1
         , serialize/1
         , serialize/2
         ]).
 
--type(options() :: #{max_size => 1..?MAX_PACKET_SIZE,
-                     version  => emqx_mqtt_types:version()
-                    }).
-
--opaque(parse_state() :: {none, options()} | {more, cont_fun()}).
-
--opaque(parse_result() :: {ok, parse_state()}
-                        | {ok, emqx_mqtt_types:packet(), binary(), parse_state()}).
-
--type(cont_fun() :: fun((binary()) -> parse_result())).
-
 -export_type([ options/0
              , parse_state/0
              , parse_result/0
+             , serialize_fun/0
              ]).
 
--define(none(Opts), {none, Opts}).
--define(more(Cont), {more, Cont}).
+-type(options() :: #{strict_mode => boolean(),
+                     max_size => 1..?MAX_PACKET_SIZE,
+                     version => emqx_types:version()
+                    }).
+
+-opaque(parse_state() :: {none, options()} | cont_fun()).
+
+-opaque(parse_result() :: {more, cont_fun()}
+                        | {ok, emqx_types:packet(), binary(), parse_state()}).
+
+-type(cont_fun() :: fun((binary()) -> parse_result())).
+
+-type(serialize_fun() :: fun((emqx_types:packet()) -> iodata())).
+
+-define(none(Options), {none, Options}).
+
 -define(DEFAULT_OPTIONS,
-        #{max_size => ?MAX_PACKET_SIZE,
-          version  => ?MQTT_PROTO_V4
+        #{strict_mode => false,
+          max_size    => ?MAX_PACKET_SIZE,
+          version     => ?MQTT_PROTO_V4
          }).
 
 %%--------------------------------------------------------------------
@@ -78,25 +85,34 @@ parse(Bin) ->
 
 -spec(parse(binary(), parse_state()) -> parse_result()).
 parse(<<>>, {none, Options}) ->
-    {ok, ?more(fun(Bin) -> parse(Bin, {none, Options}) end)};
-parse(<<Type:4, Dup:1, QoS:2, Retain:1, Rest/binary>>, {none, Options}) ->
-    parse_remaining_len(Rest, #mqtt_packet_header{type   = Type,
-                                                  dup    = bool(Dup),
-                                                  qos    = fixqos(Type, QoS),
-                                                  retain = bool(Retain)}, Options);
-parse(Bin, {more, Cont}) when is_binary(Bin), is_function(Cont) ->
+    {more, fun(Bin) -> parse(Bin, {none, Options}) end};
+parse(<<Type:4, Dup:1, QoS:2, Retain:1, Rest/binary>>,
+      {none, Options = #{strict_mode := StrictMode}}) ->
+    %% Validate header if strict mode.
+    StrictMode andalso validate_header(Type, Dup, QoS, Retain),
+    Header = #mqtt_packet_header{type   = Type,
+                                 dup    = bool(Dup),
+                                 qos    = QoS,
+                                 retain = bool(Retain)
+                                },
+    Header1 = case fixqos(Type, QoS) of
+                  QoS      -> Header;
+                  FixedQoS -> Header#mqtt_packet_header{qos = FixedQoS}
+              end,
+    parse_remaining_len(Rest, Header1, Options);
+parse(Bin, Cont) when is_binary(Bin), is_function(Cont) ->
     Cont(Bin).
 
 parse_remaining_len(<<>>, Header, Options) ->
-    {ok, ?more(fun(Bin) -> parse_remaining_len(Bin, Header, Options) end)};
+    {more, fun(Bin) -> parse_remaining_len(Bin, Header, Options) end};
 parse_remaining_len(Rest, Header, Options) ->
     parse_remaining_len(Rest, Header, 1, 0, Options).
 
 parse_remaining_len(_Bin, _Header, _Multiplier, Length, #{max_size := MaxSize})
   when Length > MaxSize ->
-    error(mqtt_frame_too_large);
+    error(frame_too_large);
 parse_remaining_len(<<>>, Header, Multiplier, Length, Options) ->
-    {ok, ?more(fun(Bin) -> parse_remaining_len(Bin, Header, Multiplier, Length, Options) end)};
+    {more, fun(Bin) -> parse_remaining_len(Bin, Header, Multiplier, Length, Options) end};
 %% Match DISCONNECT without payload
 parse_remaining_len(<<0:8, Rest/binary>>, Header = #mqtt_packet_header{type = ?DISCONNECT}, 1, 0, Options) ->
     Packet = packet(Header, #mqtt_packet_disconnect{reason_code = ?RC_SUCCESS}),
@@ -113,7 +129,7 @@ parse_remaining_len(<<0:1, Len:7, Rest/binary>>, Header, Multiplier, Value,
                     Options = #{max_size := MaxSize}) ->
     FrameLen = Value + Len * Multiplier,
     if
-        FrameLen > MaxSize -> error(mqtt_frame_too_large);
+        FrameLen > MaxSize -> error(frame_too_large);
         true -> parse_frame(Rest, Header, FrameLen, Options)
     end.
 
@@ -132,11 +148,12 @@ parse_frame(Bin, Header, Length, Options) ->
                     {ok, packet(Header, Variable), Rest, ?none(Options)}
             end;
         TooShortBin ->
-            {ok, ?more(fun(BinMore) ->
-                               parse_frame(<<TooShortBin/binary, BinMore/binary>>, Header, Length, Options)
-                       end)}
+            {more, fun(BinMore) ->
+                           parse_frame(<<TooShortBin/binary, BinMore/binary>>, Header, Length, Options)
+                   end}
     end.
 
+-compile({inline, [packet/1, packet/2, packet/3]}).
 packet(Header) ->
     #mqtt_packet{header = Header}.
 packet(Header, Variable) ->
@@ -147,7 +164,8 @@ packet(Header, Variable, Payload) ->
 parse_packet(#mqtt_packet_header{type = ?CONNECT}, FrameBin, _Options) ->
     {ProtoName, Rest} = parse_utf8_string(FrameBin),
     <<BridgeTag:4, ProtoVer:4, Rest1/binary>> = Rest,
-    % Note: Crash when reserved flag doesn't equal to 0, there is no strict compliance with the MQTT5.0.
+    % Note: Crash when reserved flag doesn't equal to 0, there is no strict
+    % compliance with the MQTT5.0.
     <<UsernameFlag : 1,
       PasswordFlag : 1,
       WillRetain   : 1,
@@ -169,7 +187,8 @@ parse_packet(#mqtt_packet_header{type = ?CONNECT}, FrameBin, _Options) ->
                                       will_retain = bool(WillRetain),
                                       keepalive   = KeepAlive,
                                       properties  = Properties,
-                                      client_id   = ClientId},
+                                      clientid    = ClientId
+                                     },
     {ConnPacket1, Rest5} = parse_will_message(ConnPacket, Rest4),
     {Username, Rest6} = parse_utf8_string(Rest5, bool(UsernameFlag)),
     {Passsword, <<>>} = parse_utf8_string(Rest6, bool(PasswordFlag)),
@@ -180,69 +199,92 @@ parse_packet(#mqtt_packet_header{type = ?CONNACK},
     {Properties, <<>>} = parse_properties(Rest, Ver),
     #mqtt_packet_connack{ack_flags   = AckFlags,
                          reason_code = ReasonCode,
-                         properties  = Properties};
+                         properties  = Properties
+                        };
 
 parse_packet(#mqtt_packet_header{type = ?PUBLISH, qos = QoS}, Bin,
-             #{version := Ver}) ->
+             #{strict_mode := StrictMode, version := Ver}) ->
     {TopicName, Rest} = parse_utf8_string(Bin),
     {PacketId, Rest1} = case QoS of
                             ?QOS_0 -> {undefined, Rest};
                             _ -> parse_packet_id(Rest)
                         end,
+    (PacketId =/= undefined) andalso
+      StrictMode andalso validate_packet_id(PacketId),
     {Properties, Payload} = parse_properties(Rest1, Ver),
-    {#mqtt_packet_publish{topic_name = TopicName,
-                          packet_id  = PacketId,
-                          properties = Properties}, Payload};
+    Publish = #mqtt_packet_publish{topic_name = TopicName,
+                                   packet_id  = PacketId,
+                                   properties = Properties
+                                  },
+    {Publish, Payload};
 
-parse_packet(#mqtt_packet_header{type = PubAck}, <<PacketId:16/big>>, _Options)
-    when ?PUBACK =< PubAck, PubAck =< ?PUBCOMP ->
+parse_packet(#mqtt_packet_header{type = PubAck}, <<PacketId:16/big>>, #{strict_mode := StrictMode})
+  when ?PUBACK =< PubAck, PubAck =< ?PUBCOMP ->
+    StrictMode andalso validate_packet_id(PacketId),
     #mqtt_packet_puback{packet_id = PacketId, reason_code = 0};
+
 parse_packet(#mqtt_packet_header{type = PubAck}, <<PacketId:16/big, ReasonCode, Rest/binary>>,
-             #{version := Ver = ?MQTT_PROTO_V5})
-    when ?PUBACK =< PubAck, PubAck =< ?PUBCOMP ->
+             #{strict_mode := StrictMode, version := Ver = ?MQTT_PROTO_V5})
+  when ?PUBACK =< PubAck, PubAck =< ?PUBCOMP ->
+    StrictMode andalso validate_packet_id(PacketId),
     {Properties, <<>>} = parse_properties(Rest, Ver),
     #mqtt_packet_puback{packet_id   = PacketId,
                         reason_code = ReasonCode,
-                        properties  = Properties};
+                        properties  = Properties
+                       };
 
 parse_packet(#mqtt_packet_header{type = ?SUBSCRIBE}, <<PacketId:16/big, Rest/binary>>,
-             #{version := Ver}) ->
+             #{strict_mode := StrictMode, version := Ver}) ->
+    StrictMode andalso validate_packet_id(PacketId),
     {Properties, Rest1} = parse_properties(Rest, Ver),
     TopicFilters = parse_topic_filters(subscribe, Rest1),
+    ok = validate_subqos([QoS || {_, #{qos := QoS}} <- TopicFilters]),
     #mqtt_packet_subscribe{packet_id     = PacketId,
                            properties    = Properties,
-                           topic_filters = TopicFilters};
+                           topic_filters = TopicFilters
+                          };
 
 parse_packet(#mqtt_packet_header{type = ?SUBACK}, <<PacketId:16/big, Rest/binary>>,
-             #{version := Ver}) ->
+             #{strict_mode := StrictMode, version := Ver}) ->
+    StrictMode andalso validate_packet_id(PacketId),
     {Properties, Rest1} = parse_properties(Rest, Ver),
+    ReasonCodes = parse_reason_codes(Rest1),
     #mqtt_packet_suback{packet_id    = PacketId,
                         properties   = Properties,
-                        reason_codes = parse_reason_codes(Rest1)};
+                        reason_codes = ReasonCodes
+                       };
 
 parse_packet(#mqtt_packet_header{type = ?UNSUBSCRIBE}, <<PacketId:16/big, Rest/binary>>,
-             #{version := Ver}) ->
+             #{strict_mode := StrictMode, version := Ver}) ->
+    StrictMode andalso validate_packet_id(PacketId),
     {Properties, Rest1} = parse_properties(Rest, Ver),
     TopicFilters = parse_topic_filters(unsubscribe, Rest1),
     #mqtt_packet_unsubscribe{packet_id     = PacketId,
                              properties    = Properties,
-                             topic_filters = TopicFilters};
+                             topic_filters = TopicFilters
+                            };
 
-parse_packet(#mqtt_packet_header{type = ?UNSUBACK}, <<PacketId:16/big>>, _Options) ->
+parse_packet(#mqtt_packet_header{type = ?UNSUBACK}, <<PacketId:16/big>>,
+             #{strict_mode := StrictMode}) ->
+    StrictMode andalso validate_packet_id(PacketId),
     #mqtt_packet_unsuback{packet_id = PacketId};
+
 parse_packet(#mqtt_packet_header{type = ?UNSUBACK}, <<PacketId:16/big, Rest/binary>>,
-             #{version := Ver}) ->
+             #{strict_mode := StrictMode, version := Ver}) ->
+    StrictMode andalso validate_packet_id(PacketId),
     {Properties, Rest1} = parse_properties(Rest, Ver),
     ReasonCodes = parse_reason_codes(Rest1),
     #mqtt_packet_unsuback{packet_id    = PacketId,
                           properties   = Properties,
-                          reason_codes = ReasonCodes};
+                          reason_codes = ReasonCodes
+                         };
 
 parse_packet(#mqtt_packet_header{type = ?DISCONNECT}, <<ReasonCode, Rest/binary>>,
              #{version := ?MQTT_PROTO_V5}) ->
     {Properties, <<>>} = parse_properties(Rest, ?MQTT_PROTO_V5),
     #mqtt_packet_disconnect{reason_code = ReasonCode,
-                            properties  = Properties};
+                            properties  = Properties
+                           };
 
 parse_packet(#mqtt_packet_header{type = ?AUTH}, <<ReasonCode, Rest/binary>>,
              #{version := ?MQTT_PROTO_V5}) ->
@@ -256,13 +298,11 @@ parse_will_message(Packet = #mqtt_packet_connect{will_flag = true,
     {Payload, Rest2} = parse_binary_data(Rest1),
     {Packet#mqtt_packet_connect{will_props   = Props,
                                 will_topic   = Topic,
-                                will_payload = Payload}, Rest2};
-parse_will_message(Packet, Bin) ->
-    {Packet, Bin}.
+                                will_payload = Payload
+                               }, Rest2};
+parse_will_message(Packet, Bin) -> {Packet, Bin}.
 
-% protocol_approved(Ver, Name) ->
-%     lists:member({Ver, Name}, ?PROTOCOL_NAMES).
-
+-compile({inline, [parse_packet_id/1]}).
 parse_packet_id(<<PacketId:16/big, Rest/binary>>) ->
     {PacketId, Rest}.
 
@@ -336,7 +376,8 @@ parse_property(<<16#26, Bin/binary>>, Props) ->
     {Pair, Rest} = parse_utf8_pair(Bin),
     case maps:find('User-Property', Props) of
         {ok, UserProps} ->
-            parse_property(Rest,Props#{'User-Property' := [Pair|UserProps]});
+            UserProps1 = lists:append(UserProps, [Pair]),
+            parse_property(Rest, Props#{'User-Property' := UserProps1});
         error ->
             parse_property(Rest, Props#{'User-Property' => [Pair]})
     end;
@@ -357,7 +398,7 @@ parse_variable_byte_integer(<<0:1, Len:7, Rest/binary>>, Multiplier, Value) ->
     {Value + Len * Multiplier, Rest}.
 
 parse_topic_filters(subscribe, Bin) ->
-    [{Topic, #{rh => Rh, rap => Rap, nl => Nl, qos => QoS, rc => 0}}
+    [{Topic, #{rh => Rh, rap => Rap, nl => Nl, qos => QoS}}
      || <<Len:16/big, Topic:Len/binary, _:2, Rh:2, Rap:1, Nl:1, QoS:2>> <= Bin];
 
 parse_topic_filters(unsubscribe, Bin) ->
@@ -385,23 +426,37 @@ parse_binary_data(<<Len:16/big, Data:Len/binary, Rest/binary>>) ->
 %% Serialize MQTT Packet
 %%--------------------------------------------------------------------
 
--spec(serialize(emqx_mqtt_types:packet()) -> iodata()).
-serialize(Packet) ->
-    serialize(Packet, ?DEFAULT_OPTIONS).
+serialize_fun() -> serialize_fun(?DEFAULT_OPTIONS).
 
--spec(serialize(emqx_mqtt_types:packet(), options()) -> iodata()).
+serialize_fun(#mqtt_packet_connect{proto_ver = ProtoVer, properties = ConnProps}) ->
+    MaxSize = get_property('Maximum-Packet-Size', ConnProps, ?MAX_PACKET_SIZE),
+    serialize_fun(#{version => ProtoVer, max_size => MaxSize});
+
+serialize_fun(#{version := Ver, max_size := MaxSize}) ->
+    fun(Packet) ->
+        IoData = serialize(Packet, Ver),
+        case is_too_large(IoData, MaxSize) of
+            true  -> <<>>;
+            false -> IoData
+        end
+    end.
+
+-spec(serialize(emqx_types:packet()) -> iodata()).
+serialize(Packet) -> serialize(Packet, ?MQTT_PROTO_V4).
+
+-spec(serialize(emqx_types:packet(), emqx_types:version()) -> iodata()).
 serialize(#mqtt_packet{header   = Header,
                        variable = Variable,
-                       payload  = Payload}, Options) when is_map(Options) ->
-    serialize(Header, serialize_variable(Variable, merge_opts(Options)), serialize_payload(Payload)).
+                       payload  = Payload}, Ver) ->
+    serialize(Header, serialize_variable(Variable, Ver), serialize_payload(Payload)).
 
 serialize(#mqtt_packet_header{type   = Type,
                               dup    = Dup,
                               qos    = QoS,
-                              retain = Retain}, VariableBin, PayloadBin)
+                              retain = Retain
+                             }, VariableBin, PayloadBin)
     when ?CONNECT =< Type andalso Type =< ?AUTH ->
     Len = iolist_size(VariableBin) + iolist_size(PayloadBin),
-    (Len =< ?MAX_PACKET_SIZE) orelse error(mqtt_frame_too_large),
     [<<Type:4, (flag(Dup)):1, (flag(QoS)):2, (flag(Retain)):1>>,
      serialize_remaining_len(Len), VariableBin, PayloadBin].
 
@@ -415,12 +470,12 @@ serialize_variable(#mqtt_packet_connect{
                       will_retain  = WillRetain,
                       keepalive    = KeepAlive,
                       properties   = Properties,
-                      client_id    = ClientId,
+                      clientid     = ClientId,
                       will_props   = WillProps,
                       will_topic   = WillTopic,
                       will_payload = WillPayload,
                       username     = Username,
-                      password     = Password}, _Options) ->
+                      password     = Password}, _Ver) ->
     [serialize_binary_data(ProtoName),
      <<(case IsBridge of
            true  -> 16#80 + ProtoVer;
@@ -447,14 +502,12 @@ serialize_variable(#mqtt_packet_connect{
 
 serialize_variable(#mqtt_packet_connack{ack_flags   = AckFlags,
                                         reason_code = ReasonCode,
-                                        properties  = Properties},
-                   #{version := Ver}) ->
+                                        properties  = Properties}, Ver) ->
     [AckFlags, ReasonCode, serialize_properties(Properties, Ver)];
 
 serialize_variable(#mqtt_packet_publish{topic_name = TopicName,
                                         packet_id  = PacketId,
-                                        properties = Properties},
-                   #{version := Ver}) ->
+                                        properties = Properties}, Ver) ->
     [serialize_utf8_string(TopicName),
      if
          PacketId =:= undefined -> <<>>;
@@ -462,59 +515,55 @@ serialize_variable(#mqtt_packet_publish{topic_name = TopicName,
      end,
      serialize_properties(Properties, Ver)];
 
-serialize_variable(#mqtt_packet_puback{packet_id = PacketId},
-                   #{version := Ver})
+serialize_variable(#mqtt_packet_puback{packet_id = PacketId}, Ver)
     when Ver == ?MQTT_PROTO_V3; Ver == ?MQTT_PROTO_V4 ->
     <<PacketId:16/big-unsigned-integer>>;
 serialize_variable(#mqtt_packet_puback{packet_id   = PacketId,
                                        reason_code = ReasonCode,
-                                       properties  = Properties},
-                   #{version := ?MQTT_PROTO_V5}) ->
+                                       properties  = Properties
+                                      },
+                   Ver = ?MQTT_PROTO_V5) ->
     [<<PacketId:16/big-unsigned-integer>>, ReasonCode,
-     serialize_properties(Properties, ?MQTT_PROTO_V5)];
+     serialize_properties(Properties, Ver)];
 
 serialize_variable(#mqtt_packet_subscribe{packet_id     = PacketId,
                                           properties    = Properties,
-                                          topic_filters = TopicFilters},
-                   #{version := Ver}) ->
+                                          topic_filters = TopicFilters}, Ver) ->
     [<<PacketId:16/big-unsigned-integer>>, serialize_properties(Properties, Ver),
      serialize_topic_filters(subscribe, TopicFilters, Ver)];
 
 serialize_variable(#mqtt_packet_suback{packet_id    = PacketId,
                                        properties   = Properties,
-                                       reason_codes = ReasonCodes},
-                   #{version := Ver}) ->
+                                       reason_codes = ReasonCodes}, Ver) ->
     [<<PacketId:16/big-unsigned-integer>>, serialize_properties(Properties, Ver),
      serialize_reason_codes(ReasonCodes)];
 
 serialize_variable(#mqtt_packet_unsubscribe{packet_id     = PacketId,
                                             properties    = Properties,
-                                            topic_filters = TopicFilters},
-                   #{version := Ver}) ->
+                                            topic_filters = TopicFilters}, Ver) ->
     [<<PacketId:16/big-unsigned-integer>>, serialize_properties(Properties, Ver),
      serialize_topic_filters(unsubscribe, TopicFilters, Ver)];
 
 serialize_variable(#mqtt_packet_unsuback{packet_id    = PacketId,
                                          properties   = Properties,
-                                         reason_codes = ReasonCodes},
-                   #{version := Ver}) ->
+                                         reason_codes = ReasonCodes}, Ver) ->
     [<<PacketId:16/big-unsigned-integer>>, serialize_properties(Properties, Ver),
      serialize_reason_codes(ReasonCodes)];
 
-serialize_variable(#mqtt_packet_disconnect{}, #{version := Ver})
+serialize_variable(#mqtt_packet_disconnect{}, Ver)
     when Ver == ?MQTT_PROTO_V3; Ver == ?MQTT_PROTO_V4 ->
     <<>>;
 
 serialize_variable(#mqtt_packet_disconnect{reason_code = ReasonCode,
                                            properties  = Properties},
-                   #{version := Ver = ?MQTT_PROTO_V5}) ->
+                   Ver = ?MQTT_PROTO_V5) ->
     [ReasonCode, serialize_properties(Properties, Ver)];
 serialize_variable(#mqtt_packet_disconnect{}, _Ver) ->
     <<>>;
 
 serialize_variable(#mqtt_packet_auth{reason_code = ReasonCode,
                                      properties  = Properties},
-                   #{version := Ver = ?MQTT_PROTO_V5}) ->
+                   Ver = ?MQTT_PROTO_V5) ->
     [ReasonCode, serialize_properties(Properties, Ver)];
 
 serialize_variable(PacketId, ?MQTT_PROTO_V3) when is_integer(PacketId) ->
@@ -603,8 +652,7 @@ serialize_property('Shared-Subscription-Available', Val) ->
 serialize_topic_filters(subscribe, TopicFilters, ?MQTT_PROTO_V5) ->
     << <<(serialize_utf8_string(Topic))/binary,
          ?RESERVED:2, Rh:2, (flag(Rap)):1,(flag(Nl)):1, QoS:2 >>
-       || {Topic, #{rh := Rh, rap := Rap, nl := Nl, qos := QoS}}
-          <- TopicFilters >>;
+       || {Topic, #{rh := Rh, rap := Rap, nl := Nl, qos := QoS}} <- TopicFilters >>;
 
 serialize_topic_filters(subscribe, TopicFilters, _Ver) ->
     << <<(serialize_utf8_string(Topic))/binary, ?RESERVED:6, QoS:2>>
@@ -645,6 +693,44 @@ serialize_variable_byte_integer(N) when N =< ?LOWBITS ->
 serialize_variable_byte_integer(N) ->
     <<1:1, (N rem ?HIGHBIT):7, (serialize_variable_byte_integer(N div ?HIGHBIT))/binary>>.
 
+%% Is the frame too large?
+-spec(is_too_large(iodata(), pos_integer()) -> boolean()).
+is_too_large(IoData, MaxSize) ->
+    iolist_size(IoData) >= MaxSize.
+
+get_property(_Key, undefined, Default) ->
+    Default;
+get_property(Key, Props, Default) ->
+    maps:get(Key, Props, Default).
+
+%% Validate header if sctrict mode. See: mqtt-v5.0: 2.1.3 Flags
+validate_header(?CONNECT, 0, 0, 0)      -> ok;
+validate_header(?CONNACK, 0, 0, 0)      -> ok;
+validate_header(?PUBLISH, 0, ?QOS_0, _) -> ok;
+validate_header(?PUBLISH, _, ?QOS_1, _) -> ok;
+validate_header(?PUBLISH, 0, ?QOS_2, _) -> ok;
+validate_header(?PUBACK, 0, 0, 0)       -> ok;
+validate_header(?PUBREC, 0, 0, 0)       -> ok;
+validate_header(?PUBREL, 0, 1, 0)       -> ok;
+validate_header(?PUBCOMP, 0, 0, 0)      -> ok;
+validate_header(?SUBSCRIBE, 0, 1, 0)    -> ok;
+validate_header(?SUBACK, 0, 0, 0)       -> ok;
+validate_header(?UNSUBSCRIBE, 0, 1, 0)  -> ok;
+validate_header(?UNSUBACK, 0, 0, 0)     -> ok;
+validate_header(?PINGREQ, 0, 0, 0)      -> ok;
+validate_header(?PINGRESP, 0, 0, 0)     -> ok;
+validate_header(?DISCONNECT, 0, 0, 0)   -> ok;
+validate_header(?AUTH, 0, 0, 0)         -> ok;
+validate_header(_Type, _Dup, _QoS, _Rt) -> error(bad_frame_header).
+
+-compile({inline, [validate_packet_id/1]}).
+validate_packet_id(0) -> error(bad_packet_id);
+validate_packet_id(_) -> ok.
+
+validate_subqos([3|_]) -> error(bad_subqos);
+validate_subqos([_|T]) -> validate_subqos(T);
+validate_subqos([])    -> ok.
+
 bool(0) -> false;
 bool(1) -> true.
 
@@ -658,3 +744,4 @@ fixqos(?PUBREL, 0)      -> 1;
 fixqos(?SUBSCRIBE, 0)   -> 1;
 fixqos(?UNSUBSCRIBE, 0) -> 1;
 fixqos(_Type, QoS)      -> QoS.
+

@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_broker).
 
@@ -122,14 +124,16 @@ subscribe(Topic, SubOpts) when is_binary(Topic), is_map(SubOpts) ->
 
 -spec(subscribe(emqx_topic:topic(), emqx_types:subid(), emqx_types:subopts()) -> ok).
 subscribe(Topic, SubId, SubOpts) when is_binary(Topic), ?is_subid(SubId), is_map(SubOpts) ->
-    SubPid = self(),
-    case ets:member(?SUBOPTION, {SubPid, Topic}) of
-        false ->
+    case ets:member(?SUBOPTION, {SubPid = self(), Topic}) of
+        false -> %% New
             ok = emqx_broker_helper:register_sub(SubPid, SubId),
             do_subscribe(Topic, SubPid, with_subid(SubId, SubOpts));
-        true -> ok
+        true -> %% Existed
+            set_subopts(SubPid, Topic, with_subid(SubId, SubOpts)),
+            ok %% ensure to return 'ok'
     end.
 
+-compile({inline, [with_subid/2]}).
 with_subid(undefined, SubOpts) ->
     SubOpts;
 with_subid(SubId, SubOpts) ->
@@ -191,7 +195,7 @@ do_unsubscribe(Group, Topic, SubPid, _SubOpts) ->
 %% Publish
 %%------------------------------------------------------------------------------
 
--spec(publish(emqx_types:message()) -> emqx_types:deliver_results()).
+-spec(publish(emqx_types:message()) -> emqx_types:publish_result()).
 publish(Msg) when is_record(Msg, message) ->
     _ = emqx_tracer:trace(publish, Msg),
     Headers = Msg#message.headers,
@@ -200,12 +204,11 @@ publish(Msg) when is_record(Msg, message) ->
             ?LOG(notice, "Publishing interrupted: ~s", [emqx_message:format(Msg)]),
             [];
         #message{topic = Topic} = Msg1 ->
-            Delivery = route(aggre(emqx_router:match_routes(Topic)), delivery(Msg1)),
-            Delivery#delivery.results
+            route(aggre(emqx_router:match_routes(Topic)), delivery(Msg1))
     end.
 
 %% Called internally
--spec(safe_publish(emqx_types:message()) -> ok).
+-spec(safe_publish(emqx_types:message()) -> ok | emqx_types:publish_result()).
 safe_publish(Msg) when is_record(Msg, message) ->
     try
         publish(Msg)
@@ -217,27 +220,27 @@ safe_publish(Msg) when is_record(Msg, message) ->
     end.
 
 delivery(Msg) ->
-    #delivery{sender = self(), message = Msg, results = []}.
+    #delivery{sender = self(), message = Msg}.
 
 %%------------------------------------------------------------------------------
 %% Route
 %%------------------------------------------------------------------------------
-
-route([], Delivery = #delivery{message = Msg}) ->
+-spec(route([emqx_types:route_entry()], emqx_types:delivery()) -> emqx_types:publish_result()).
+route([], #delivery{message = Msg}) ->
     emqx_hooks:run('message.dropped', [#{node => node()}, Msg]),
-    inc_dropped_cnt(Msg#message.topic), Delivery;
-
-route([{To, Node}], Delivery) when Node =:= node() ->
-    dispatch(To, Delivery);
-
-route([{To, Node}], Delivery = #delivery{results = Results}) when is_atom(Node) ->
-    forward(Node, To, Delivery#delivery{results = [{route, Node, To}|Results]});
-
-route([{To, Group}], Delivery) when is_tuple(Group); is_binary(Group) ->
-    emqx_shared_sub:dispatch(Group, To, Delivery);
-
+    inc_dropped_cnt(Msg#message.topic),
+    [];
 route(Routes, Delivery) ->
-    lists:foldl(fun(Route, Acc) -> route([Route], Acc) end, Delivery, Routes).
+    lists:foldl(fun(Route, Acc) ->
+            [do_route(Route, Delivery) | Acc]
+        end, [], Routes).
+
+do_route({To, Node}, Delivery) when Node =:= node() ->
+    {Node, To, dispatch(To, Delivery)};
+do_route({To, Node}, Delivery) when is_atom(Node) ->
+    {Node, To, forward(Node, To, Delivery, emqx:get_env(rpc_mode, async))};
+do_route({To, Group}, Delivery) when is_tuple(Group); is_binary(Group) ->
+    {share, To, emqx_shared_sub:dispatch(Group, To, Delivery)}.
 
 aggre([]) ->
     [];
@@ -254,45 +257,58 @@ aggre(Routes) ->
       end, [], Routes).
 
 %% @doc Forward message to another node.
-forward(Node, To, Delivery) ->
-    %% rpc:call to ensure the delivery, but the latency:(
-    case emqx_rpc:call(Node, ?BROKER, dispatch, [To, Delivery]) of
+-spec(forward(node(), emqx_types:topic(), emqx_types:delivery(), RPCMode::sync|async)
+    -> emqx_types:deliver_result()).
+forward(Node, To, Delivery, async) ->
+    case emqx_rpc:cast(To, Node, ?BROKER, dispatch, [To, Delivery]) of
+        true -> ok;
         {badrpc, Reason} ->
-            ?LOG(error, "Failed to forward msg to ~s: ~p", [Node, Reason]),
-            Delivery;
-        Delivery1 -> Delivery1
+            ?LOG(error, "Ansync forward msg to ~s failed: ~p", [Node, Reason]),
+            {error, badrpc}
+    end;
+
+forward(Node, To, Delivery, sync) ->
+    case emqx_rpc:call(To, Node, ?BROKER, dispatch, [To, Delivery]) of
+        {badrpc, Reason} ->
+            ?LOG(error, "Sync forward msg to ~s failed: ~p", [Node, Reason]),
+            {error, badrpc};
+        Result -> Result
     end.
 
--spec(dispatch(emqx_topic:topic(), emqx_types:delivery()) -> emqx_types:delivery()).
-dispatch(Topic, Delivery = #delivery{message = Msg, results = Results}) ->
+-spec(dispatch(emqx_topic:topic(), emqx_types:delivery()) -> emqx_types:deliver_result()).
+dispatch(Topic, #delivery{message = Msg}) ->
     case subscribers(Topic) of
         [] ->
             emqx_hooks:run('message.dropped', [#{node => node()}, Msg]),
             inc_dropped_cnt(Topic),
-            Delivery;
+            {error, no_subscribers};
         [Sub] -> %% optimize?
-            Cnt = dispatch(Sub, Topic, Msg),
-            Delivery#delivery{results = [{dispatch, Topic, Cnt}|Results]};
+            dispatch(Sub, Topic, Msg);
         Subs ->
-            Cnt = lists:foldl(
-                    fun(Sub, Acc) ->
-                            dispatch(Sub, Topic, Msg) + Acc
-                    end, 0, Subs),
-            Delivery#delivery{results = [{dispatch, Topic, Cnt}|Results]}
+            lists:foldl(
+                fun(Sub, Res) ->
+                    case dispatch(Sub, Topic, Msg) of
+                        ok -> Res;
+                        Err -> Err
+                    end
+                end, ok, Subs)
     end.
 
 dispatch(SubPid, Topic, Msg) when is_pid(SubPid) ->
     case erlang:is_process_alive(SubPid) of
         true ->
-            SubPid ! {dispatch, Topic, Msg},
-            1;
-        false -> 0
+            SubPid ! {deliver, Topic, Msg},
+            ok;
+        false -> {error, subscriber_die}
     end;
 dispatch({shard, I}, Topic, Msg) ->
     lists:foldl(
-      fun(SubPid, Cnt) ->
-              dispatch(SubPid, Topic, Msg) + Cnt
-      end, 0, subscribers({shard, Topic, I})).
+        fun(SubPid, Res) ->
+            case dispatch(SubPid, Topic, Msg) of
+                ok -> Res;
+                Err -> Err
+            end
+        end, ok, subscribers({shard, Topic, I})).
 
 inc_dropped_cnt(<<"$SYS/", _/binary>>) ->
     ok;
@@ -363,7 +379,11 @@ get_subopts(SubId, Topic) when ?is_subid(SubId) ->
 
 -spec(set_subopts(emqx_topic:topic(), emqx_types:subopts()) -> boolean()).
 set_subopts(Topic, NewOpts) when is_binary(Topic), is_map(NewOpts) ->
-    Sub = {self(), Topic},
+    set_subopts(self(), Topic, NewOpts).
+
+%% @private
+set_subopts(SubPid, Topic, NewOpts) ->
+    Sub = {SubPid, Topic},
     case ets:lookup(?SUBOPTION, Sub) of
         [{_, OldOpts}] ->
             ets:insert(?SUBOPTION, {Sub, maps:merge(OldOpts, NewOpts)});
@@ -374,9 +394,9 @@ set_subopts(Topic, NewOpts) when is_binary(Topic), is_map(NewOpts) ->
 topics() ->
     emqx_router:topics().
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Stats fun
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 stats_fun() ->
     safe_update_stats(?SUBSCRIBER, 'subscribers.count', 'subscribers.max'),
@@ -472,3 +492,4 @@ code_change(_OldVsn, State, _Extra) ->
 %%------------------------------------------------------------------------------
 %% Internal functions
 %%------------------------------------------------------------------------------
+

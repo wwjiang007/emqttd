@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_hooks).
 
@@ -21,7 +23,9 @@
 
 -logger_header("[Hooks]").
 
--export([start_link/0, stop/0]).
+-export([ start_link/0
+        , stop/0
+        ]).
 
 %% Hooks API
 -export([ add/2
@@ -42,6 +46,11 @@
         , code_change/3
         ]).
 
+-export_type([ hookpoint/0
+             , action/0
+             , filter/0
+             ]).
+
 %% Multiple callbacks can be registered on a hookpoint.
 %% The execution order depends on the priority value:
 %%   - Callbacks with greater priority values will be run before
@@ -54,28 +63,32 @@
 -type(action() :: function() | mfa()).
 -type(filter() :: function() | mfa()).
 
--record(callback, {action   :: action(),
-                   filter   :: filter(),
-                   priority :: integer()}).
+-record(callback, {
+          action :: action(),
+          filter :: filter(),
+          priority :: integer()
+         }).
 
--record(hook, {name :: hookpoint(), callbacks :: list(#callback{})}).
-
--export_type([hookpoint/0, action/0, filter/0]).
+-record(hook, {
+          name :: hookpoint(),
+          callbacks :: list(#callback{})
+         }).
 
 -define(TAB, ?MODULE).
 -define(SERVER, ?MODULE).
 
 -spec(start_link() -> startlink_ret()).
 start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], [{hibernate_after, 1000}]).
+    gen_server:start_link({local, ?SERVER},
+                          ?MODULE, [], [{hibernate_after, 1000}]).
 
 -spec(stop() -> ok).
 stop() ->
     gen_server:stop(?SERVER, normal, infinity).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Hooks API
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 %% @doc Register a callback
 -spec(add(hookpoint(), action() | #callback{}) -> ok_or_error(already_exists)).
@@ -113,9 +126,8 @@ run(HookPoint, Args) ->
 run_fold(HookPoint, Args, Acc) ->
     do_run_fold(lookup(HookPoint), Args, Acc).
 
-
 do_run([#callback{action = Action, filter = Filter} | Callbacks], Args) ->
-    case filter_passed(Filter, Args) andalso execute(Action, Args) of
+    case filter_passed(Filter, Args) andalso safe_execute(Action, Args) of
         %% stop the hook chain and return
         stop -> ok;
         %% continue the hook chain, in following cases:
@@ -128,7 +140,7 @@ do_run([], _Args) ->
 
 do_run_fold([#callback{action = Action, filter = Filter} | Callbacks], Args, Acc) ->
     Args1 = Args ++ [Acc],
-    case filter_passed(Filter, Args1) andalso execute(Action, Args1) of
+    case filter_passed(Filter, Args1) andalso safe_execute(Action, Args1) of
         %% stop the hook chain
         stop -> Acc;
         %% stop the hook chain with NewAcc
@@ -148,6 +160,15 @@ filter_passed(undefined, _Args) -> true;
 filter_passed(Filter, Args) ->
     execute(Filter, Args).
 
+safe_execute(Fun, Args) ->
+    try execute(Fun, Args) of
+        Result -> Result
+    catch
+        _:Reason:Stacktrace ->
+            ?LOG(error, "Failed to execute ~p(~p): ~p", [Fun, Args, {Reason, Stacktrace}]),
+            ok
+    end.
+
 %% @doc execute a function.
 execute(Fun, Args) when is_function(Fun) ->
     erlang:apply(Fun, Args);
@@ -165,12 +186,12 @@ lookup(HookPoint) ->
         [] -> []
     end.
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% gen_server callbacks
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 init([]) ->
-    ok = emqx_tables:new(?TAB, [{keypos, #hook.name}, {read_concurrency, true}, protected]),
+    ok = emqx_tables:new(?TAB, [{keypos, #hook.name}, {read_concurrency, true}]),
     {ok, #{}}.
 
 handle_call({add, HookPoint, Callback = #callback{action = Action}}, _From, State) ->

@@ -17,6 +17,8 @@
 -ifndef(EMQ_X_MQTT_HRL).
 -define(EMQ_X_MQTT_HRL, true).
 
+-define(UINT_MAX, 16#FFFFFFFF).
+
 %%--------------------------------------------------------------------
 %% MQTT SockOpts
 %%--------------------------------------------------------------------
@@ -176,8 +178,9 @@
 %% Maximum MQTT Packet ID and Length
 %%--------------------------------------------------------------------
 
--define(MAX_PACKET_ID, 16#ffff).
--define(MAX_PACKET_SIZE, 16#fffffff).
+-define(MAX_PACKET_ID, 16#FFFF).
+-define(MAX_PACKET_SIZE, 16#FFFFFFF).
+-define(MAX_TOPIC_AlIAS, 16#FFFF).
 
 %%--------------------------------------------------------------------
 %% MQTT Frame Mask
@@ -204,8 +207,7 @@
 -define(DEFAULT_SUBOPTS, #{rh  => 0, %% Retain Handling
                            rap => 0, %% Retain as Publish
                            nl  => 0, %% No Local
-                           qos => 0, %% QoS
-                           rc  => 0  %% Reason Code
+                           qos => 0  %% QoS
                           }).
 
 -record(mqtt_packet_connect, {
@@ -218,7 +220,7 @@
           will_retain  = false,
           keepalive    = 0,
           properties   = undefined,
-          client_id    = <<>>,
+          clientid     = <<>>,
           will_props   = undefined,
           will_topic   = undefined,
           will_payload = undefined,
@@ -300,8 +302,25 @@
         }).
 
 %%--------------------------------------------------------------------
+%% MQTT Message Internal
+%%--------------------------------------------------------------------
+
+-record(mqtt_msg, {
+          qos = ?QOS_0,
+          retain = false,
+          dup = false,
+          packet_id,
+          topic,
+          props,
+          payload
+         }).
+
+%%--------------------------------------------------------------------
 %% MQTT Packet Match
 %%--------------------------------------------------------------------
+
+-define(CONNECT_PACKET(),
+        #mqtt_packet{header = #mqtt_packet_header{type = ?CONNECT}}).
 
 -define(CONNECT_PACKET(Var),
     #mqtt_packet{header   = #mqtt_packet_header{type = ?CONNECT},
@@ -349,6 +368,13 @@
     #mqtt_packet{header   = #mqtt_packet_header{type = ?PUBLISH,
                                                 qos  = QoS},
                  variable = #mqtt_packet_publish{packet_id = PacketId}
+                }).
+
+-define(PUBLISH_PACKET(QoS, Topic, PacketId),
+    #mqtt_packet{header   = #mqtt_packet_header{type = ?PUBLISH,
+                                                qos  = QoS},
+                 variable = #mqtt_packet_publish{topic_name = Topic,
+                                                 packet_id  = PacketId}
                 }).
 
 -define(PUBLISH_PACKET(QoS, Topic, PacketId, Payload),

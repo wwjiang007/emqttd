@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_access_rule).
 
@@ -20,6 +22,8 @@
 -export([ match/3
         , compile/1
         ]).
+
+-export_type([rule/0]).
 
 -type(acl_result() :: allow | deny).
 
@@ -33,14 +37,8 @@
 -type(rule() :: {acl_result(), all} |
                 {acl_result(), who(), access(), list(emqx_topic:topic())}).
 
--export_type([rule/0]).
-
 -define(ALLOW_DENY(A), ((A =:= allow) orelse (A =:= deny))).
 -define(PUBSUB(A), ((A =:= subscribe) orelse (A =:= publish) orelse (A =:= pubsub))).
-
-%%------------------------------------------------------------------------------
-%% APIs
-%%------------------------------------------------------------------------------
 
 %% @doc Compile Access Rule.
 compile({A, all}) when ?ALLOW_DENY(A) ->
@@ -88,70 +86,70 @@ bin(B) when is_binary(B) ->
     B.
 
 %% @doc Match access rule
--spec(match(emqx_types:credentials(), emqx_types:topic(), rule())
+-spec(match(emqx_types:clientinfo(), emqx_types:topic(), rule())
       -> {matched, allow} | {matched, deny} | nomatch).
-match(_Credentials, _Topic, {AllowDeny, all}) when ?ALLOW_DENY(AllowDeny) ->
+match(_ClientInfo, _Topic, {AllowDeny, all}) when ?ALLOW_DENY(AllowDeny) ->
     {matched, AllowDeny};
-match(Credentials, Topic, {AllowDeny, Who, _PubSub, TopicFilters})
+match(ClientInfo, Topic, {AllowDeny, Who, _PubSub, TopicFilters})
     when ?ALLOW_DENY(AllowDeny) ->
-    case match_who(Credentials, Who)
-         andalso match_topics(Credentials, Topic, TopicFilters) of
+    case match_who(ClientInfo, Who)
+         andalso match_topics(ClientInfo, Topic, TopicFilters) of
         true  -> {matched, AllowDeny};
         false -> nomatch
     end.
 
-match_who(_Credentials, all) ->
+match_who(_ClientInfo, all) ->
     true;
-match_who(_Credentials, {user, all}) ->
+match_who(_ClientInfo, {user, all}) ->
     true;
-match_who(_Credentials, {client, all}) ->
+match_who(_ClientInfo, {client, all}) ->
     true;
-match_who(#{client_id := ClientId}, {client, ClientId}) ->
+match_who(#{clientid := ClientId}, {client, ClientId}) ->
     true;
 match_who(#{username := Username}, {user, Username}) ->
     true;
-match_who(#{peername := undefined}, {ipaddr, _Tup}) ->
+match_who(#{peerhost := undefined}, {ipaddr, _Tup}) ->
     false;
-match_who(#{peername := {IP, _}}, {ipaddr, CIDR}) ->
+match_who(#{peerhost := IP}, {ipaddr, CIDR}) ->
     esockd_cidr:match(IP, CIDR);
-match_who(Credentials, {'and', Conds}) when is_list(Conds) ->
+match_who(ClientInfo, {'and', Conds}) when is_list(Conds) ->
     lists:foldl(fun(Who, Allow) ->
-                  match_who(Credentials, Who) andalso Allow
+                  match_who(ClientInfo, Who) andalso Allow
                 end, true, Conds);
-match_who(Credentials, {'or', Conds}) when is_list(Conds) ->
+match_who(ClientInfo, {'or', Conds}) when is_list(Conds) ->
     lists:foldl(fun(Who, Allow) ->
-                  match_who(Credentials, Who) orelse Allow
+                  match_who(ClientInfo, Who) orelse Allow
                 end, false, Conds);
-match_who(_Credentials, _Who) ->
+match_who(_ClientInfo, _Who) ->
     false.
 
-match_topics(_Credentials, _Topic, []) ->
+match_topics(_ClientInfo, _Topic, []) ->
     false;
-match_topics(Credentials, Topic, [{pattern, PatternFilter}|Filters]) ->
-    TopicFilter = feed_var(Credentials, PatternFilter),
+match_topics(ClientInfo, Topic, [{pattern, PatternFilter}|Filters]) ->
+    TopicFilter = feed_var(ClientInfo, PatternFilter),
     match_topic(emqx_topic:words(Topic), TopicFilter)
-        orelse match_topics(Credentials, Topic, Filters);
-match_topics(Credentials, Topic, [TopicFilter|Filters]) ->
+        orelse match_topics(ClientInfo, Topic, Filters);
+match_topics(ClientInfo, Topic, [TopicFilter|Filters]) ->
    match_topic(emqx_topic:words(Topic), TopicFilter)
-       orelse match_topics(Credentials, Topic, Filters).
+       orelse match_topics(ClientInfo, Topic, Filters).
 
 match_topic(Topic, {eq, TopicFilter}) ->
     Topic == TopicFilter;
 match_topic(Topic, TopicFilter) ->
     emqx_topic:match(Topic, TopicFilter).
 
-feed_var(Credentials, Pattern) ->
-    feed_var(Credentials, Pattern, []).
-feed_var(_Credentials, [], Acc) ->
+feed_var(ClientInfo, Pattern) ->
+    feed_var(ClientInfo, Pattern, []).
+feed_var(_ClientInfo, [], Acc) ->
     lists:reverse(Acc);
-feed_var(Credentials = #{client_id := undefined}, [<<"%c">>|Words], Acc) ->
-    feed_var(Credentials, Words, [<<"%c">>|Acc]);
-feed_var(Credentials = #{client_id := ClientId}, [<<"%c">>|Words], Acc) ->
-    feed_var(Credentials, Words, [ClientId |Acc]);
-feed_var(Credentials = #{username := undefined}, [<<"%u">>|Words], Acc) ->
-    feed_var(Credentials, Words, [<<"%u">>|Acc]);
-feed_var(Credentials = #{username := Username}, [<<"%u">>|Words], Acc) ->
-    feed_var(Credentials, Words, [Username|Acc]);
-feed_var(Credentials, [W|Words], Acc) ->
-    feed_var(Credentials, Words, [W|Acc]).
+feed_var(ClientInfo = #{clientid := undefined}, [<<"%c">>|Words], Acc) ->
+    feed_var(ClientInfo, Words, [<<"%c">>|Acc]);
+feed_var(ClientInfo = #{clientid := ClientId}, [<<"%c">>|Words], Acc) ->
+    feed_var(ClientInfo, Words, [ClientId |Acc]);
+feed_var(ClientInfo = #{username := undefined}, [<<"%u">>|Words], Acc) ->
+    feed_var(ClientInfo, Words, [<<"%u">>|Acc]);
+feed_var(ClientInfo = #{username := Username}, [<<"%u">>|Words], Acc) ->
+    feed_var(ClientInfo, Words, [Username|Acc]);
+feed_var(ClientInfo, [W|Words], Acc) ->
+    feed_var(ClientInfo, Words, [W|Acc]).
 
