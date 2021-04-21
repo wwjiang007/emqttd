@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -109,7 +109,7 @@ init([]) ->
                                          {read_concurrency, true},
                                          {write_concurrency, true}
                                         ]),
-    {ok, #{}, hibernate}.
+    {ok, ensure_timer(#{}), hibernate}.
 
 handle_call(Req, _From, State) ->
     ?LOG(error, "Unexpected call: ~p", [Req]),
@@ -124,13 +124,12 @@ handle_cast({detected, #flapping{clientid   = ClientId,
         true -> %% Flapping happened:(
             ?LOG(error, "Flapping detected: ~s(~s) disconnected ~w times in ~wms",
                  [ClientId, inet:ntoa(PeerHost), DetectCnt, Duration]),
-            Now = erlang:system_time(millisecond),
+            Now = erlang:system_time(second),
             Banned = #banned{who    = {clientid, ClientId},
                              by     = <<"flapping detector">>,
                              reason = <<"flapping is detected">>,
                              at     = Now,
                              until  = Now + Interval},
-            alarm_handler:set_alarm({{flapping_detected, ClientId}, Banned}),
             emqx_banned:create(Banned);
         false ->
             ?LOG(warning, "~s(~s) disconnected ~w times in ~wms",
@@ -142,6 +141,12 @@ handle_cast(Msg, State) ->
     ?LOG(error, "Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
+handle_info({timeout, TRef, expired_detecting}, State = #{expired_timer := TRef}) ->
+    Timestamp = erlang:system_time(millisecond) - maps:get(duration, get_policy()),
+    MatchSpec = [{{'_', '_', '_', '$1', '_'},[{'<', '$1', Timestamp}], [true]}],
+    ets:select_delete(?FLAPPING_TAB, MatchSpec),
+    {noreply, ensure_timer(State), hibernate};
+
 handle_info(Info, State) ->
     ?LOG(error, "Unexpected info: ~p", [Info]),
     {noreply, State}.
@@ -151,3 +156,8 @@ terminate(_Reason, _State) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+ensure_timer(State) ->
+    Timeout = maps:get(duration, get_policy()),
+    TRef = emqx_misc:start_timer(Timeout, expired_detecting),
+    State#{expired_timer => TRef}.

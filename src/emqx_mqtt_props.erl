@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@
         , name/1
         , filter/2
         , validate/1
+        , new/0
         ]).
 
 %% For tests
@@ -127,24 +128,21 @@ name(16#29) -> 'Subscription-Identifier-Available';
 name(16#2A) -> 'Shared-Subscription-Available';
 name(Id)    -> error({unsupported_property, Id}).
 
--spec(filter(emqx_types:packet_type(), emqx_types:properties()|list())
+-spec(filter(emqx_types:packet_type(), emqx_types:properties())
       -> emqx_types:properties()).
-filter(PacketType, Props) when is_map(Props) ->
-    maps:from_list(filter(PacketType, maps:to_list(Props)));
-
-filter(PacketType, Props) when ?CONNECT =< PacketType,
-                               PacketType =< ?AUTH,
-                               is_list(Props) ->
-    Filter = fun(Name) ->
-                 case maps:find(id(Name), ?PROPS_TABLE) of
-                     {ok, {Name, _Type, 'ALL'}} ->
-                         true;
-                     {ok, {Name, _Type, AllowedTypes}} ->
-                         lists:member(PacketType, AllowedTypes);
-                     error -> false
-                 end
-             end,
-    [Prop || Prop = {Name, _} <- Props, Filter(Name)].
+filter(PacketType, Props) when is_map(Props),
+                               PacketType >= ?CONNECT,
+                               PacketType =< ?AUTH ->
+    F = fun(Name, _) ->
+            case maps:find(id(Name), ?PROPS_TABLE) of
+                {ok, {Name, _Type, 'ALL'}} ->
+                    true;
+                {ok, {Name, _Type, AllowedTypes}} ->
+                    lists:member(PacketType, AllowedTypes);
+                error -> false
+            end
+        end,
+    maps:filter(F, Props).
 
 -spec(validate(emqx_types:properties()) -> ok).
 validate(Props) when is_map(Props) ->
@@ -179,6 +177,10 @@ validate_value('UTF8-Encoded-String', Val)  ->
 validate_value('Binary-Data', Val) ->
     is_binary(Val);
 validate_value(_Type, _Val) -> false.
+
+-spec(new() -> map()).
+new() ->
+    #{}.
 
 -spec(all() -> map()).
 all() -> ?PROPS_TABLE.

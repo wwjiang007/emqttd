@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +23,8 @@
 
 -export([ merge_opts/2
         , maybe_apply/2
+        , compose/1
+        , compose/2
         , run_fold/3
         , pipeline/3
         , start_timer/2
@@ -43,6 +45,11 @@
         , index_of/2
         ]).
 
+-export([ bin2hexstr_A_F/1
+        , bin2hexstr_a_f/1
+        , hexstr2bin/1
+        ]).
+
 %% @doc Merge options
 -spec(merge_opts(Opts, Opts) -> Opts when Opts :: proplists:proplist()).
 merge_opts(Defaults, Options) ->
@@ -56,10 +63,24 @@ merge_opts(Defaults, Options) ->
 %% @doc Apply a function to a maybe argument.
 -spec(maybe_apply(fun((maybe(A)) -> maybe(A)), maybe(A))
       -> maybe(A) when A :: any()).
-maybe_apply(_Fun, undefined) ->
-    undefined;
+maybe_apply(_Fun, undefined) -> undefined;
 maybe_apply(Fun, Arg) when is_function(Fun) ->
     erlang:apply(Fun, [Arg]).
+
+-spec(compose(list(F)) -> G
+  when F :: fun((any()) -> any()),
+       G :: fun((any()) -> any())).
+compose([F|More]) -> compose(F, More).
+
+-spec(compose(F, G|[Gs]) -> C
+  when F :: fun((X1) -> X2),
+       G :: fun((X2) -> X3),
+       Gs :: [fun((Xn) -> Xn1)],
+       C :: fun((X1) -> Xm),
+       X3 :: any(), Xn :: any(), Xn1 :: any(), Xm :: any()).
+compose(F, G) when is_function(G) -> fun(X) -> G(F(X)) end;
+compose(F, [G]) -> compose(F, G);
+compose(F, [G|More]) -> compose(compose(F, G), More).
 
 %% @doc RunFold
 run_fold([], Acc, _State) ->
@@ -72,7 +93,7 @@ pipeline([], Input, State) ->
     {ok, Input, State};
 
 pipeline([Fun|More], Input, State) ->
-    try apply_fun(Fun, Input, State) of
+    case apply_fun(Fun, Input, State) of
         ok -> pipeline(More, Input, State);
         {ok, NState} ->
             pipeline(More, Input, NState);
@@ -82,11 +103,6 @@ pipeline([Fun|More], Input, State) ->
             {error, Reason, State};
         {error, Reason, NState} ->
             {error, Reason, NState}
-    catch
-        Error:Reason:Stacktrace ->
-            ?LOG(error, "pipeline ~p failed: ~p,\nstacktrace: ~0p",
-                [{Fun, Input, State}, {Error, Reason}, Stacktrace]),
-            {error, Reason, State}
     end.
 
 -compile({inline, [apply_fun/3]}).
@@ -221,4 +237,24 @@ index_of(E, I, [E|_]) ->
     I;
 index_of(E, I, [_|L]) ->
     index_of(E, I+1, L).
+
+-spec(bin2hexstr_A_F(binary()) -> binary()).
+bin2hexstr_A_F(B) when is_binary(B) ->
+    << <<(int2hexchar(H, upper)), (int2hexchar(L, upper))>> || <<H:4, L:4>> <= B>>.
+
+-spec(bin2hexstr_a_f(binary()) -> binary()).
+bin2hexstr_a_f(B) when is_binary(B) ->
+    << <<(int2hexchar(H, lower)), (int2hexchar(L, lower))>> || <<H:4, L:4>> <= B>>.
+
+int2hexchar(I, _) when I >= 0 andalso I < 10 -> I + $0;
+int2hexchar(I, upper) -> I - 10 + $A;
+int2hexchar(I, lower) -> I - 10 + $a.
+
+-spec(hexstr2bin(binary()) -> binary()).
+hexstr2bin(B) when is_binary(B) ->
+    << <<(hexchar2int(H)*16 + hexchar2int(L))>> || <<H:8, L:8>> <= B>>.
+
+hexchar2int(I) when I >= $0 andalso I =< $9 -> I - $0;
+hexchar2int(I) when I >= $A andalso I =< $F -> I - $A + 10;
+hexchar2int(I) when I >= $a andalso I =< $f -> I - $a + 10.
 

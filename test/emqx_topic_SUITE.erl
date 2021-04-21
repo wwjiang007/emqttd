@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,7 +26,6 @@
         [ wildcard/1
         , match/2
         , validate/1
-        , triples/1
         , prepend/2
         , join/1
         , words/1
@@ -143,18 +142,7 @@ t_sigle_level_validate(_) ->
     true = validate({filter, <<"sport/+/player1">>}),
     ok = ?catch_error(topic_invalid_char, validate({filter, <<"sport+">>})).
 
-t_triples(_) ->
-    Triples = [{root,<<"a">>,<<"a">>},
-               {<<"a">>,<<"b">>,<<"a/b">>},
-               {<<"a/b">>,<<"c">>,<<"a/b/c">>}],
-    ?assertEqual(Triples, triples(<<"a/b/c">>)).
-
-t_triples_perf(_) ->
-    Topic = <<"/abkc/19383/192939/akakdkkdkak/xxxyyuya/akakak">>,
-    ok = bench('triples/1', fun emqx_topic:triples/1, [Topic]).
-
 t_prepend(_) ->
-    ?assertEqual(<<"a/b/c">>, prepend(root, <<"a/b/c">>)),
     ?assertEqual(<<"ab">>, prepend(undefined, <<"ab">>)),
     ?assertEqual(<<"a/b">>, prepend(<<>>, <<"a/b">>)),
     ?assertEqual(<<"x/a/b">>, prepend("x/", <<"a/b">>)),
@@ -201,7 +189,7 @@ t_feed_var(_) ->
                  feed_var(<<"%c">>, <<"clientId">>, <<"username/test/client/%c">>)).
 
 long_topic() ->
-    iolist_to_binary([[integer_to_list(I), "/"] || I <- lists:seq(0, 10000)]).
+    iolist_to_binary([[integer_to_list(I), "/"] || I <- lists:seq(0, 66666)]).
 
 t_parse(_) ->
     ok = ?catch_error({invalid_topic_filter, <<"$queue/t">>},

@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -65,3 +65,11 @@ t_shards_num(_) ->
     
 t_get_sub_shard(_) ->
     ?assertEqual(0, emqx_broker_helper:get_sub_shard(self(), <<"topic">>)).
+
+t_terminate(_) ->
+    ?assertEqual(ok, gen_server:stop(emqx_broker_helper)).
+
+t_uncovered_func(_) ->
+    gen_server:call(emqx_broker_helper, test),
+    gen_server:cast(emqx_broker_helper, test),
+    emqx_broker_helper ! test.

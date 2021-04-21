@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@
 -compile({inline,
           [ idle_timeout/1
           , publish_limit/1
+          , ratelimit/1
           , mqtt_frame_options/1
           , mqtt_strict_mode/1
           , max_packet_size/1
@@ -45,6 +46,10 @@
           , session_expiry_interval/1
           , force_gc_policy/1
           , force_shutdown_policy/1
+          , response_information/1
+          , quota_policy/1
+          , get_env/2
+          , get_env/3
           ]}).
 
 %% APIs
@@ -52,7 +57,9 @@
 
 %% Zone Option API
 -export([ idle_timeout/1
+        %% XXX: Dedeprecated at v4.2
         , publish_limit/1
+        , ratelimit/1
         , mqtt_frame_options/1
         , mqtt_strict_mode/1
         , max_packet_size/1
@@ -70,6 +77,8 @@
         , session_expiry_interval/1
         , force_gc_policy/1
         , force_shutdown_policy/1
+        , response_information/1
+        , quota_policy/1
         ]).
 
 -export([ init_gc_state/1
@@ -114,7 +123,7 @@ start_link() ->
 stop() ->
     gen_server:stop(?SERVER).
 
--spec(init_gc_state(zone()) -> emqx_gc:gc_state()).
+-spec(init_gc_state(zone()) -> maybe(emqx_gc:gc_state())).
 init_gc_state(Zone) ->
     maybe_apply(fun emqx_gc:init/1, force_gc_policy(Zone)).
 
@@ -132,6 +141,10 @@ idle_timeout(Zone) ->
 -spec(publish_limit(zone()) -> maybe(esockd_rate_limit:config())).
 publish_limit(Zone) ->
     get_env(Zone, publish_limit).
+
+-spec(ratelimit(zone()) -> [emqx_limiter:specs()]).
+ratelimit(Zone) ->
+    get_env(Zone, ratelimit, []).
 
 -spec(mqtt_frame_options(zone()) -> emqx_frame:options()).
 mqtt_frame_options(Zone) ->
@@ -178,7 +191,7 @@ enable_flapping_detect(Zone) ->
 ignore_loop_deliver(Zone) ->
     get_env(Zone, ignore_loop_deliver, false).
 
--spec(server_keepalive(zone()) -> pos_integer()).
+-spec(server_keepalive(zone()) -> maybe(pos_integer())).
 server_keepalive(Zone) ->
     get_env(Zone, server_keepalive).
 
@@ -201,6 +214,14 @@ force_gc_policy(Zone) ->
 -spec(force_shutdown_policy(zone()) -> maybe(emqx_oom:opts())).
 force_shutdown_policy(Zone) ->
     get_env(Zone, force_shutdown_policy).
+
+-spec(response_information(zone()) -> string()).
+response_information(Zone) ->
+    get_env(Zone, response_information).
+
+-spec(quota_policy(zone()) -> emqx_quota:policy()).
+quota_policy(Zone) ->
+    get_env(Zone, quota, []).
 
 %%--------------------------------------------------------------------
 %% APIs

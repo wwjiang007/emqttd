@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,46 +19,59 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
--include("emqx_mqtt.hrl").
+-include_lib("emqx/include/emqx_mqtt.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("snabbkaffe/include/snabbkaffe.hrl").
 
--define(STATS_KYES, [recv_pkt, recv_msg, send_pkt, send_msg,
-                     recv_oct, recv_cnt, send_oct, send_cnt,
-                     send_pend
-                    ]).
-
-all() -> emqx_ct:all(?MODULE) ++ [{group, real_client}].
-
-groups() ->
-    [{real_client, [non_parallel_tests],
-        [
-            g_get_conn_stats,
-            g_handle_sock_passive
-        ]}].
+all() -> emqx_ct:all(?MODULE).
 
 %%--------------------------------------------------------------------
 %% CT callbacks
 %%--------------------------------------------------------------------
 
 init_per_suite(Config) ->
+    %% Meck Transport
+    ok = meck:new(emqx_transport, [non_strict, passthrough, no_history, no_link]),
+    %% Meck Channel
+    ok = meck:new(emqx_channel, [passthrough, no_history, no_link]),
+    %% Meck Cm
+    ok = meck:new(emqx_cm, [passthrough, no_history, no_link]),
+    %% Meck Limiter
+    ok = meck:new(emqx_limiter, [passthrough, no_history, no_link]),
+    %% Meck Pd
+    ok = meck:new(emqx_pd, [passthrough, no_history, no_link]),
+    %% Meck Metrics
+    ok = meck:new(emqx_metrics, [passthrough, no_history, no_link]),
+    ok = meck:expect(emqx_metrics, inc, fun(_) -> ok end),
+    ok = meck:expect(emqx_metrics, inc, fun(_, _) -> ok end),
+    ok = meck:expect(emqx_metrics, inc_recv, fun(_) -> ok end),
+    ok = meck:expect(emqx_metrics, inc_sent, fun(_) -> ok end),
+    %% Meck Hooks
+    ok = meck:new(emqx_hooks, [passthrough, no_history, no_link]),
+    ok = meck:expect(emqx_hooks, run, fun(_Hook, _Args) -> ok end),
+    ok = meck:expect(emqx_hooks, run_fold, fun(_Hook, _Args, Acc) -> {ok, Acc} end),
+
+    ok = meck:expect(emqx_channel, ensure_disconnected, fun(_, Channel) -> Channel end),
+
+    ok = meck:expect(emqx_alarm, activate, fun(_, _) -> ok end),
+    ok = meck:expect(emqx_alarm, deactivate, fun(_) -> ok end),
+    ok = meck:expect(emqx_alarm, deactivate, fun(_, _) -> ok end),
+
     Config.
 
 end_per_suite(_Config) ->
+    ok = meck:unload(emqx_transport),
+    catch meck:unload(emqx_channel),
+    ok = meck:unload(emqx_cm),
+    ok = meck:unload(emqx_limiter),
+    ok = meck:unload(emqx_pd),
+    ok = meck:unload(emqx_metrics),
+    ok = meck:unload(emqx_hooks),
+    ok = meck:unload(emqx_alarm),
     ok.
 
-init_per_group(real_client, Config) ->
-    emqx_ct_helpers:boot_modules(all),
-    emqx_ct_helpers:start_apps([]),
-    Config;
-init_per_group(_, Config) -> Config.
-
-end_per_group(real_client, _Config) ->
-    emqx_ct_helpers:stop_apps([]);
-end_per_group(_, Config) -> Config.
-
-init_per_testcase(_TestCase, Config) ->
-    %% Meck Transport
-    ok = meck:new(emqx_transport, [non_strict, passthrough, no_history]),
+init_per_testcase(TestCase, Config) when
+        TestCase =/= t_ws_pingreq_before_connected ->
     ok = meck:expect(emqx_transport, wait, fun(Sock) -> {ok, Sock} end),
     ok = meck:expect(emqx_transport, type, fun(_Sock) -> tcp end),
     ok = meck:expect(emqx_transport, ensure_ok_or_exit,
@@ -67,34 +80,295 @@ init_per_testcase(_TestCase, Config) ->
                         (peercert, [sock]) -> undefined
                      end),
     ok = meck:expect(emqx_transport, setopts, fun(_Sock, _Opts) -> ok end),
+    ok = meck:expect(emqx_transport, getopts, fun(_Sock, Options) ->
+                                                      {ok, [{K, 0} || K <- Options]}
+                                              end),
     ok = meck:expect(emqx_transport, getstat, fun(_Sock, Options) ->
                                                       {ok, [{K, 0} || K <- Options]}
                                               end),
     ok = meck:expect(emqx_transport, async_send, fun(_Sock, _Data) -> ok end),
+    ok = meck:expect(emqx_transport, async_send, fun(_Sock, _Data, _Opts) -> ok end),
     ok = meck:expect(emqx_transport, fast_close, fun(_Sock) -> ok end),
-    %% Meck Channel
-    ok = meck:new(emqx_channel, [passthrough, no_history]),
-    %% Meck Metrics
-    ok = meck:new(emqx_metrics, [passthrough, no_history]),
-    ok = meck:expect(emqx_metrics, inc, fun(_, _) -> ok end),
-    ok = meck:expect(emqx_metrics, inc_recv, fun(_) -> ok end),
-    ok = meck:expect(emqx_metrics, inc_sent, fun(_) -> ok end),
+    case erlang:function_exported(?MODULE, TestCase, 2) of
+        true -> ?MODULE:TestCase(init, Config);
+        _ -> Config
+    end;
+init_per_testcase(_, Config) ->
     Config.
 
-end_per_testcase(_TestCase, Config) ->
-    ok = meck:unload(emqx_transport),
-    ok = meck:unload(emqx_channel),
-    ok = meck:unload(emqx_metrics),
+end_per_testcase(TestCase, Config) ->
+    case erlang:function_exported(?MODULE, TestCase, 2) of
+        true -> ?MODULE:TestCase('end', Config);
+        false -> ok
+    end,
     Config.
 
 %%--------------------------------------------------------------------
 %% Test cases
 %%--------------------------------------------------------------------
+t_ws_pingreq_before_connected(_) ->
+    ?assertMatch({ok, [_, {close,protocol_error}], _},
+        handle_msg({incoming, ?PACKET(?PINGREQ)}, st(#{}, #{conn_state => disconnected}))).
+
+t_info(_) ->
+    CPid = spawn(fun() ->
+                    receive 
+                        {'$gen_call', From, info} ->
+                            gen_server:reply(From, emqx_connection:info(st()))
+                    after
+                        100 -> error("error")
+                    end
+                end),
+    #{sockinfo := SockInfo} = emqx_connection:info(CPid),
+    ?assertMatch(#{active_n := 100,
+                    peername := {{127,0,0,1},3456},
+                    sockname := {{127,0,0,1},1883},
+                    sockstate := idle,
+                    socktype := tcp}, SockInfo).
+
+t_info_limiter(_) ->
+    St = st(#{limiter => emqx_limiter:init(external, [])}),
+    ?assertEqual(undefined, emqx_connection:info(limiter, St)).
+
+t_stats(_) ->
+    CPid = spawn(fun() ->
+                        receive 
+                            {'$gen_call', From, stats} ->
+                                gen_server:reply(From, emqx_connection:stats(st()))
+                        after
+                            100 -> error("error")
+                        end
+                    end),
+    Stats = emqx_connection:stats(CPid),
+    ?assertMatch([{recv_oct,0},
+                  {recv_cnt,0},
+                  {send_oct,0},
+                  {send_cnt,0},
+                  {send_pend,0}| _] , Stats).
+
+t_process_msg(_) ->
+    with_conn(fun(CPid) -> 
+                        ok = meck:expect(emqx_channel, handle_in, 
+                                        fun(_Packet, Channel) -> 
+                                                {ok, Channel} 
+                                        end),
+                        CPid ! {incoming, ?PACKET(?PINGREQ)},
+                        CPid ! {incoming, undefined},
+                        CPid ! {tcp_passive, sock},
+                        CPid ! {tcp_closed, sock},
+                        timer:sleep(100),
+                        ok = trap_exit(CPid, {shutdown, tcp_closed})
+                end, #{trap_exit => true}).
+
+t_ensure_stats_timer(_) ->
+    NStats = emqx_connection:ensure_stats_timer(100, st()),
+    Stats_timer = emqx_connection:info(stats_timer, NStats),
+    ?assert(is_reference(Stats_timer)),
+    ?assertEqual(NStats, emqx_connection:ensure_stats_timer(100, NStats)).
+
+t_cancel_stats_timer(_) ->
+    NStats = emqx_connection:cancel_stats_timer(st(#{stats_timer => make_ref()})),
+    Stats_timer = emqx_connection:info(stats_timer, NStats),
+    ?assertEqual(undefined, Stats_timer),
+    ?assertEqual(NStats, emqx_connection:cancel_stats_timer(NStats)).
+
+t_append_msg(_) ->
+    ?assertEqual([msg], emqx_connection:append_msg([], [msg])),
+    ?assertEqual([msg], emqx_connection:append_msg([], msg)),
+    ?assertEqual([msg1,msg], emqx_connection:append_msg([msg1], [msg])),
+    ?assertEqual([msg1,msg], emqx_connection:append_msg([msg1], msg)).
+
+t_handle_msg(_) ->
+    From = {make_ref(), self()},
+    ?assertMatch({ok, _St}, handle_msg({'$gen_call', From, for_testing}, st())),
+    ?assertMatch({stop, {shutdown,discarded}, _St}, handle_msg({'$gen_call', From, discard}, st())),
+    ?assertMatch({stop, {shutdown,discarded}, _St}, handle_msg({'$gen_call', From, discard}, st())),
+    ?assertMatch({ok, [], _St}, handle_msg({tcp, From, <<"for_testing">>}, st())),
+    ?assertMatch({ok, _St}, handle_msg(for_testing, st())).
+
+t_handle_msg_incoming(_) ->
+    ?assertMatch({ok, _Out, _St},
+                 handle_msg({incoming, ?CONNECT_PACKET(#mqtt_packet_connect{})}, st())),
+    ok = meck:expect(emqx_channel, handle_in, fun(_Packet, Channel) -> {ok, Channel} end),
+    ?assertMatch({ok, _St},
+                 handle_msg({incoming, ?PUBLISH_PACKET(?QOS_1, <<"t">>, 1, <<"payload">>)}, st())),
+    Sub1 = <<?SUBSCRIBE:4,2:4,11,0,2,0,6,84,111,112,105,99,65,2>>,
+    ?assertMatch({ok, _St}, handle_msg({incoming, Sub1}, st())),
+    Sub2 = <<?UNSUBSCRIBE:4,2:4,10,0,2,0,6,84,111,112,105,99,65>>,
+    ?assertMatch({ok, _St}, handle_msg({incoming, Sub2}, st())),
+    ?assertMatch({ok, _St}, handle_msg({incoming, undefined}, st())).
+
+t_handle_msg_outgoing(_) ->
+    ?assertEqual(ok, handle_msg({outgoing, ?PUBLISH_PACKET(?QOS_2, <<"Topic">>, 1, <<>>)}, st())),
+    ?assertEqual(ok, handle_msg({outgoing, ?PUBREL_PACKET(1)}, st())),
+    ?assertEqual(ok, handle_msg({outgoing, ?PUBCOMP_PACKET(1)}, st())).
+
+t_handle_msg_tcp_error(_) ->
+    ?assertMatch({stop, {shutdown, econnreset}, _St},
+                 handle_msg({tcp_error, sock, econnreset}, st())).
+
+t_handle_msg_tcp_closed(_) ->
+    ?assertMatch({stop, {shutdown, tcp_closed}, _St}, handle_msg({tcp_closed, sock}, st())).
+
+t_handle_msg_passive(_) ->
+    ?assertMatch({ok, _Event, _St}, handle_msg({tcp_passive, sock}, st())).
+
+t_handle_msg_deliver(_) ->
+    ok = meck:expect(emqx_channel, handle_deliver, fun(_, Channel) -> {ok, Channel} end),
+    ?assertMatch({ok, _St}, handle_msg({deliver, topic, msg}, st())).
+
+t_handle_msg_inet_reply(_) ->
+    ok = meck:expect(emqx_pd, get_counter, fun(_) -> 10 end),
+    ?assertMatch({ok, _St}, handle_msg({inet_reply, for_testing, ok}, st(#{active_n => 0}))),
+    ?assertEqual(ok, handle_msg({inet_reply, for_testing, ok}, st(#{active_n => 100}))),
+    ?assertMatch({stop, {shutdown, for_testing}, _St},
+                 handle_msg({inet_reply, for_testing, {error, for_testing}}, st())).
+
+t_handle_msg_connack(_) ->
+    ?assertEqual(ok, handle_msg({connack, ?CONNACK_PACKET(?CONNACK_ACCEPT)}, st())).
+
+t_handle_msg_close(_) ->
+    ?assertMatch({stop, {shutdown, normal}, _St}, handle_msg({close, normal}, st())).
+
+t_handle_msg_event(_) ->
+    ok = meck:expect(emqx_cm, register_channel, fun(_, _, _) -> ok end),
+    ok = meck:expect(emqx_cm, insert_channel_info, fun(_, _, _) -> ok end),
+    ok = meck:expect(emqx_cm, set_chan_info, fun(_, _) -> ok end),
+    ok = meck:expect(emqx_cm, connection_closed, fun(_) -> ok end),
+    ?assertEqual(ok, handle_msg({event, connected}, st())),
+    ?assertMatch({ok, _St}, handle_msg({event, disconnected}, st())),
+    ?assertMatch({ok, _St}, handle_msg({event, undefined}, st())).
+
+t_handle_msg_timeout(_) ->
+    ?assertMatch({ok, _St}, handle_msg({timeout, make_ref(), for_testing}, st())).
+
+t_handle_msg_shutdown(_) ->
+    ?assertMatch({stop, {shutdown, for_testing}, _St}, handle_msg({shutdown, for_testing}, st())).
+
+t_handle_call(_) ->
+    St = st(),
+    ?assertMatch({ok, _St}, handle_msg({event, undefined}, St)),
+    ?assertMatch({reply, _Info, _NSt}, handle_call(self(), info, St)),
+    ?assertMatch({reply, _Stats, _NSt}, handle_call(self(), stats, St)),
+    ?assertMatch({reply, ok, _NSt}, handle_call(self(), {ratelimit, []}, St)),
+    ?assertMatch({reply, ok, _NSt},
+                 handle_call(self(), {ratelimit, [{conn_messages_in, {100, 1}}]}, St)),
+    ?assertEqual({reply, ignored, St}, handle_call(self(), for_testing, St)),
+    ?assertMatch({stop, {shutdown,kicked}, ok, _NSt},
+                 handle_call(self(), kick, St)).
+
+t_handle_timeout(_) ->
+    TRef = make_ref(),
+    State = st(#{idle_timer => TRef, limit_timer => TRef, stats_timer => TRef}),
+    ?assertMatch({stop, {shutdown,idle_timeout}, _NState},
+                 emqx_connection:handle_timeout(TRef, idle_timeout, State)),
+    ?assertMatch({ok, {event,running}, _NState},
+                 emqx_connection:handle_timeout(TRef, limit_timeout, State)),
+    ?assertMatch({ok, _NState},
+                 emqx_connection:handle_timeout(TRef, emit_stats, State)),
+    ?assertMatch({ok, _NState},
+                 emqx_connection:handle_timeout(TRef, keepalive, State)),
+
+    ok = meck:expect(emqx_transport, getstat, fun(_Sock, _Options) -> {error, for_testing} end),
+    ?assertMatch({stop, {shutdown,for_testing}, _NState},
+                 emqx_connection:handle_timeout(TRef, keepalive, State)),
+    ?assertMatch({ok, _NState}, emqx_connection:handle_timeout(TRef, undefined, State)).
+
+t_parse_incoming(_) ->
+    ?assertMatch({ok, [], _NState}, emqx_connection:parse_incoming(<<>>, st())),
+    ?assertMatch({[], _NState}, emqx_connection:parse_incoming(<<"for_testing">>, [], st())).
+
+t_next_incoming_msgs(_) ->
+    ?assertEqual({incoming, packet}, emqx_connection:next_incoming_msgs([packet])),
+    ?assertEqual([{incoming, packet2}, {incoming, packet1}],
+                 emqx_connection:next_incoming_msgs([packet1, packet2])).
+
+t_handle_incoming(_) ->
+    ?assertMatch({ok, _Out, _NState},
+                 emqx_connection:handle_incoming(?CONNECT_PACKET(#mqtt_packet_connect{}), st())),
+    ?assertMatch({ok, _Out, _NState}, emqx_connection:handle_incoming(frame_error, st())).
+
+t_with_channel(_) ->
+    State = st(),
+    ok = meck:expect(emqx_channel, handle_in, fun(_, _) -> ok end),
+    ?assertEqual({ok, State}, emqx_connection:with_channel(handle_in, [for_testing], State)),
+
+    ok = meck:expect(emqx_channel, handle_in, fun(_, _) -> Channel = channel(), {ok, Channel} end),
+    ?assertMatch({ok, _NState}, emqx_connection:with_channel(handle_in, [for_testing], State)),
+
+    ok = meck:expect(emqx_channel, handle_in,
+                     fun(_, _) -> Channel = channel(), {ok, ?DISCONNECT_PACKET(),Channel} end),
+    ?assertMatch({ok, _Out, _NChannel},
+                 emqx_connection:with_channel(handle_in, [for_testing], State)),
+
+    ok = meck:expect(emqx_channel, handle_in,
+                     fun(_, _) -> Channel = channel(), {shutdown, [for_testing], Channel} end),
+    ?assertMatch({stop, {shutdown,[for_testing]}, _NState},
+                 emqx_connection:with_channel(handle_in, [for_testing], State)),
+
+    ok = meck:expect(emqx_channel, handle_in,
+                     fun(_, _) ->
+                             Channel = channel(),
+                             {shutdown, [for_testing], ?DISCONNECT_PACKET(), Channel}
+                     end),
+    ?assertMatch({stop, {shutdown,[for_testing]}, _NState},
+                 emqx_connection:with_channel(handle_in, [for_testing], State)),
+    meck:unload(emqx_channel).
+
+t_handle_outgoing(_) ->
+    ?assertEqual(ok, emqx_connection:handle_outgoing(?PACKET(?PINGRESP), st())),
+    ?assertEqual(ok, emqx_connection:handle_outgoing([?PACKET(?PINGRESP)], st())).
+    
+t_handle_info(_) ->
+    ?assertMatch({ok, {event,running}, _NState},
+                 emqx_connection:handle_info(activate_socket, st())),
+    ?assertMatch({stop, {shutdown, for_testing}, _NStats},
+                 emqx_connection:handle_info({sock_error, for_testing}, st())),
+    ?assertMatch({ok, _NState}, emqx_connection:handle_info(for_testing, st())).
+
+t_ensure_rate_limit(_) ->
+    State = emqx_connection:ensure_rate_limit(#{}, st(#{limiter => undefined})),
+    ?assertEqual(undefined, emqx_connection:info(limiter, State)),
+
+    ok = meck:expect(emqx_limiter, check,
+                     fun(_, _) -> {ok, emqx_limiter:init(external, [])} end),
+    State1 = emqx_connection:ensure_rate_limit(#{}, st(#{limiter => #{}})),
+    ?assertEqual(undefined, emqx_connection:info(limiter, State1)),
+
+    ok = meck:expect(emqx_limiter, check,
+                     fun(_, _) -> {pause, 3000, emqx_limiter:init(external, [])} end),
+    State2 = emqx_connection:ensure_rate_limit(#{}, st(#{limiter => #{}})),
+    ?assertEqual(undefined, emqx_connection:info(limiter, State2)),
+    ?assertEqual(blocked, emqx_connection:info(sockstate, State2)).
+
+t_activate_socket(_) ->
+    State = st(),
+    {ok, NStats} = emqx_connection:activate_socket(State),
+    ?assertEqual(running, emqx_connection:info(sockstate, NStats)),
+ 
+    State1 = st(#{sockstate => blocked}),
+    ?assertEqual({ok, State1}, emqx_connection:activate_socket(State1)),
+
+    State2 = st(#{sockstate => closed}),
+    ?assertEqual({ok, State2}, emqx_connection:activate_socket(State2)).
+
+t_close_socket(_) ->
+    State = emqx_connection:close_socket(st(#{sockstate => closed})),
+    ?assertEqual(closed, emqx_connection:info(sockstate, State)),
+    State1 = emqx_connection:close_socket(st()),
+    ?assertEqual(closed, emqx_connection:info(sockstate, State1)).
+
+t_system_code_change(_) ->
+    State = st(),
+    ?assertEqual({ok, State}, emqx_connection:system_code_change(State, [], [], [])).
+
+t_next_msgs(_) ->
+    ?assertEqual({outgoing, ?CONNECT_PACKET()}, emqx_connection:next_msgs(?CONNECT_PACKET())),
+    ?assertEqual({}, emqx_connection:next_msgs({})),
+    ?assertEqual([], emqx_connection:next_msgs([])).
 
 t_start_link_ok(_) ->
-    with_connection(fun(CPid) ->
-                            state = element(1, sys:get_state(CPid))
-                    end).
+    with_conn(fun(CPid) -> state = element(1, sys:get_state(CPid)) end).
 
 t_start_link_exit_on_wait(_) ->
     ok = exit_on_wait_error(enotconn, normal),
@@ -110,184 +384,49 @@ t_start_link_exit_on_activate(_) ->
     ok = exit_on_activate_error(econnreset, {shutdown, econnreset}).
 
 t_get_conn_info(_) ->
-    with_connection(fun(CPid) ->
-                            #{sockinfo := SockInfo} = emqx_connection:info(CPid),
-                            ?assertEqual(#{active_n => 100,
-                                           peername => {{127,0,0,1},3456},
-                                           sockname => {{127,0,0,1},1883},
-                                           sockstate => running,
-                                           socktype => tcp}, SockInfo)
-                    end).
+    with_conn(fun(CPid) ->
+                      #{sockinfo := SockInfo} = emqx_connection:info(CPid),
+                      ?assertEqual(#{active_n => 100,
+                                     peername => {{127,0,0,1},3456},
+                                     sockname => {{127,0,0,1},1883},
+                                     sockstate => running,
+                                     socktype => tcp
+                                    }, SockInfo)
+              end).
 
-g_get_conn_stats(_) ->
-    with_client(fun(CPid) ->
-                            Stats = emqx_connection:stats(CPid),
-                            ct:pal("==== stats: ~p", [Stats]),
-                            [?assert(proplists:get_value(Key, Stats) >= 0) || Key <- ?STATS_KYES]
-                    end, []).
-
-t_handle_call_discard(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_call,
-                                             fun(discard, Channel) ->
-                                                     {shutdown, discarded, ok, Channel}
-                                             end),
-                            ok = emqx_connection:call(CPid, discard),
-                            timer:sleep(100),
-                            ok = trap_exit(CPid, {shutdown, discarded})
-                    end, #{trap_exit => true}).
-
-t_handle_call_takeover(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_call,
-                                              fun({takeover, 'begin'}, Channel) ->
-                                                      {reply, session, Channel};
-                                                 ({takeover, 'end'}, Channel) ->
-                                                      {shutdown, takeovered, [], Channel}
-                                              end),
-                            session = emqx_connection:call(CPid, {takeover, 'begin'}),
-                            [] = emqx_connection:call(CPid, {takeover, 'end'}),
-                            timer:sleep(100),
-                            ok = trap_exit(CPid, {shutdown, takeovered})
-                    end, #{trap_exit => true}).
-
-t_handle_call_any(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_call,
-                                             fun(_Req, Channel) -> {reply, ok, Channel} end),
-                            ok = emqx_connection:call(CPid, req)
-                    end).
-
-t_handle_incoming_connect(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_in, fun(_Packet, Channel) -> {ok, Channel} end),
-                            ConnPkt = #mqtt_packet_connect{proto_ver   = ?MQTT_PROTO_V5,
-                                                           proto_name  = <<"MQTT">>,
-                                                           clientid    = <<>>,
-                                                           clean_start = true,
-                                                           keepalive   = 60
-                                                          },
-                            Frame = make_frame(?CONNECT_PACKET(ConnPkt)),
-                            CPid ! {tcp, sock, Frame}
-                    end).
-
-t_handle_incoming_publish(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_in, fun(_Packet, Channel) -> {ok, Channel} end),
-                            Frame = make_frame(?PUBLISH_PACKET(?QOS_1, <<"t">>, 1, <<"payload">>)),
-                            CPid ! {tcp, sock, Frame}
-                    end).
-
-t_handle_incoming_subscribe(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_in, fun(_Packet, Channel) -> {ok, Channel} end),
-                            Frame = <<?SUBSCRIBE:4,2:4,11,0,2,0,6,84,111,112,105,99,65,2>>,
-                            CPid ! {tcp, sock, Frame}
-                    end).
-
-t_handle_incoming_unsubscribe(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_in, fun(_Packet, Channel) -> {ok, Channel} end),
-                            Frame = <<?UNSUBSCRIBE:4,2:4,10,0,2,0,6,84,111,112,105,99,65>>,
-                            CPid ! {tcp, sock, Frame}
-                    end).
-
-t_handle_sock_error(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_info,
-                                             fun({_, Reason}, Channel) ->
-                                                     {shutdown, Reason, Channel}
-                                             end),
-                            %% TODO: fixme later
-                            CPid ! {tcp_error, sock, econnreset},
-                            timer:sleep(100),
-                            trap_exit(CPid, {shutdown, econnreset})
-                    end, #{trap_exit => true}).
-
-g_handle_sock_passive(_) ->
-    with_client(fun(CPid) -> CPid ! {tcp_passive, sock} end, []).
-
-t_handle_sock_activate(_) ->
-    with_connection(fun(CPid) -> CPid ! activate_socket end).
-
-t_handle_sock_closed(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_info,
-                                             fun({sock_closed, Reason}, Channel) ->
-                                                     {shutdown, Reason, Channel}
-                                             end),
-                            CPid ! {tcp_closed, sock},
-                            timer:sleep(100),
-                            trap_exit(CPid, {shutdown, tcp_closed})
-                    end, #{trap_exit => true}).
-
-t_handle_outgoing(_) ->
-    with_connection(fun(CPid) ->
-                            Publish = ?PUBLISH_PACKET(?QOS_2, <<"Topic">>, 1, <<>>),
-                            CPid ! {outgoing, Publish},
-                            CPid ! {outgoing, ?PUBREL_PACKET(1)},
-                            CPid ! {outgoing, [?PUBCOMP_PACKET(1)]}
-                    end).
-
-t_conn_rate_limit(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_in, fun(_, Channel) -> {ok, Channel} end),
-                            lists:foreach(fun(I) ->
-                                                  Publish = ?PUBLISH_PACKET(?QOS_0, <<"Topic">>, I, payload(2000)),
-                                                  CPid ! {tcp, sock, make_frame(Publish)}
-                                          end, [1, 2])
-                            %%#{sockinfo := #{sockstate := blocked}} = emqx_connection:info(CPid)
-                    end, #{active_n => 1, rate_limit => {1, 1024}}).
-
-t_conn_pub_limit(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_in, fun(_, Channel) -> {ok, Channel} end),
-                            ok = lists:foreach(fun(I) ->
-                                                       CPid ! {incoming, ?PUBLISH_PACKET(?QOS_0, <<"Topic">>, I, <<>>)}
-                                               end, lists:seq(1, 3))
-                            %%#{sockinfo := #{sockstate := blocked}} = emqx_connection:info(CPid)
-                    end, #{active_n => 1, publish_limit => {1, 2}}).
+t_oom_shutdown(init, Config) ->
+    ok = snabbkaffe:start_trace(),
+    ok = meck:new(emqx_misc, [non_strict, passthrough, no_history, no_link]),
+    ok = meck:new(emqx_zone, [non_strict, passthrough, no_history, no_link]),
+    meck:expect(emqx_zone, oom_policy,
+                fun(_Zone) -> #{message_queue_len => 10, max_heap_size => 8000000} end),
+    meck:expect(emqx_misc, check_oom,
+                fun(_) -> {shutdown, "fake_oom"} end),
+    Config;
+t_oom_shutdown('end', _Config) ->
+    snabbkaffe:stop(),
+    meck:unload(emqx_misc),
+    meck:unload(emqx_zone),
+    ok.
 
 t_oom_shutdown(_) ->
-    with_connection(fun(CPid) ->
-                            CPid ! {shutdown, message_queue_too_long},
-                            timer:sleep(100),
-                            trap_exit(CPid, {shutdown, message_queue_too_long})
-                    end, #{trap_exit => true}).
-
-t_handle_idle_timeout(_) ->
-    ok = emqx_zone:set_env(external, idle_timeout, 10),
-    with_connection(fun(CPid) ->
-                            timer:sleep(100),
-                            trap_exit(CPid, {shutdown, idle_timeout})
-                    end, #{zone => external, trap_exit => true}).
-
-t_handle_emit_stats(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_timeout,
-                                             fun(_TRef, _TMsg, Channel) ->
-                                                     {ok, Channel}
-                                             end),
-                            CPid ! {timeout, make_ref(), emit_stats}
-                    end).
-
-t_handle_keepalive_timeout(_) ->
-    with_connection(fun(CPid) ->
-                            ok = meck:expect(emqx_channel, handle_timeout,
-                                             fun(_TRef, _TMsg, Channel) ->
-                                                     {shutdown, keepalive_timeout, Channel}
-                                             end),
-                            CPid ! {timeout, make_ref(), keepalive},
-                            timer:sleep(100),
-                            trap_exit(CPid, {shutdown, keepalive_timeout})
-                    end, #{trap_exit => true}).
-
-t_handle_shutdown(_) ->
-    with_connection(fun(CPid) ->
-                            CPid ! Shutdown = {shutdown, reason},
-                            timer:sleep(100),
-                            trap_exit(CPid, Shutdown)
-                    end, #{trap_exit => true}).
+    Opts = #{trap_exit => true},
+    with_conn(
+      fun(Pid) ->
+              Pid ! {tcp_passive, foo},
+              {ok, _} = ?block_until(#{?snk_kind := check_oom}, 1000),
+              {ok, _} = ?block_until(#{?snk_kind := terminate}, 100),
+              Trace = snabbkaffe:collect_trace(),
+              ?assertEqual(1, length(?of_kind(terminate, Trace))),
+              receive
+                  {'EXIT', Pid, Reason} ->
+                      ?assertEqual({shutdown, "fake_oom"}, Reason)
+              after 1000 ->
+                        error(timeout)
+              end,
+              ?assertNot(erlang:is_process_alive(Pid))
+      end, Opts),
+    ok.
 
 %%--------------------------------------------------------------------
 %% Helper functions
@@ -298,27 +437,28 @@ exit_on_wait_error(SockErr, Reason) ->
                      fun(_Sock) ->
                              {error, SockErr}
                      end),
-    with_connection(fun(CPid) ->
-                            timer:sleep(100),
-                            trap_exit(CPid, Reason)
-                    end, #{trap_exit => true}).
+    with_conn(fun(CPid) ->
+                      timer:sleep(100),
+                      trap_exit(CPid, Reason)
+              end, #{trap_exit => true}).
 
 exit_on_activate_error(SockErr, Reason) ->
     ok = meck:expect(emqx_transport, setopts,
                      fun(_Sock, _Opts) ->
                              {error, SockErr}
                      end),
-    with_connection(fun(CPid) ->
-                            timer:sleep(100),
-                            trap_exit(CPid, Reason)
-                    end, #{trap_exit => true}).
+    with_conn(fun(CPid) ->
+                      timer:sleep(100),
+                      trap_exit(CPid, Reason)
+              end, #{trap_exit => true}).
 
-with_connection(TestFun) ->
-    with_connection(TestFun, #{trap_exit => false}).
+with_conn(TestFun) ->
+    with_conn(TestFun, #{trap_exit => false}).
 
-with_connection(TestFun, Options) when is_map(Options) ->
-    with_connection(TestFun, maps:to_list(Options));
-with_connection(TestFun, Options) ->
+with_conn(TestFun, Options) when is_map(Options) ->
+    with_conn(TestFun, maps:to_list(Options));
+
+with_conn(TestFun, Options) ->
     TrapExit = proplists:get_value(trap_exit, Options, false),
     process_flag(trap_exit, TrapExit),
     {ok, CPid} = emqx_connection:start_link(emqx_transport, sock, Options),
@@ -326,24 +466,12 @@ with_connection(TestFun, Options) ->
     TrapExit orelse emqx_connection:stop(CPid),
     ok.
 
-with_client(TestFun, _Options) ->
-    ClientId = <<"t_conn">>,
-    {ok, C} = emqtt:start_link([{clientid, ClientId}]),
-    {ok, _} = emqtt:connect(C),
-    timer:sleep(50),
-    case emqx_cm:lookup_channels(ClientId) of
-        [] -> ct:fail({client_not_started, ClientId});
-        [ChanPid] ->
-            TestFun(ChanPid),
-            emqtt:stop(C)
-    end.
-
 trap_exit(Pid, Reason) ->
     receive
         {'EXIT', Pid, Reason} -> ok;
         {'EXIT', Pid, Other}  -> error({unexpect_exit, Other})
     after
-        0 -> error({expect_exit, Reason})
+        100 -> error({expect_exit, Reason})
     end.
 
 make_frame(Packet) ->
@@ -351,3 +479,51 @@ make_frame(Packet) ->
 
 payload(Len) -> iolist_to_binary(lists:duplicate(Len, 1)).
 
+st() -> st(#{}, #{}).
+st(InitFields) when is_map(InitFields) ->
+    st(InitFields, #{}).
+st(InitFields, ChannelFields) when is_map(InitFields) ->
+    St = emqx_connection:init_state(emqx_transport, sock, [#{zone => external}]),
+    maps:fold(fun(N, V, S) -> emqx_connection:set_field(N, V, S) end,
+              emqx_connection:set_field(channel, channel(ChannelFields), St),
+              InitFields
+             ).
+
+channel() -> channel(#{}).
+channel(InitFields) ->
+    ConnInfo = #{peername => {{127,0,0,1}, 3456},
+                 sockname => {{127,0,0,1}, 18083},
+                 conn_mod => emqx_connection,
+                 proto_name => <<"MQTT">>,
+                 proto_ver => ?MQTT_PROTO_V5,
+                 clean_start => true,
+                 keepalive => 30,
+                 clientid => <<"clientid">>,
+                 username => <<"username">>,
+                 receive_maximum => 100,
+                 expiry_interval => 0
+                },
+    ClientInfo = #{zone       => zone,
+                   protocol   => mqtt,
+                   peerhost   => {127,0,0,1},
+                   clientid   => <<"clientid">>,
+                   username   => <<"username">>,
+                   is_superuser => false,
+                   peercert   => undefined,
+                   mountpoint => undefined
+                  },
+    Session = emqx_session:init(#{zone => external},
+                                #{receive_maximum => 0}
+                               ),
+    maps:fold(fun(Field, Value, Channel) ->
+                      emqx_channel:set_field(Field, Value, Channel)
+              end,
+              emqx_channel:init(ConnInfo, [{zone, zone}]),
+              maps:merge(#{clientinfo => ClientInfo,
+                           session    => Session,
+                           conn_state => connected
+                          }, InitFields)).
+
+handle_msg(Msg, St) -> emqx_connection:handle_msg(Msg, St).
+
+handle_call(Pid, Call, St) -> emqx_connection:handle_call(Pid, Call, St).

@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +19,8 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
+-include_lib("eunit/include/eunit.hrl").
+
 all() -> emqx_ct:all(?MODULE).
 
 init_per_suite(Config) ->
@@ -31,12 +33,13 @@ set_special_configs(emqx) ->
     application:set_env(emqx, flapping_detect_policy,
                         #{threshold => 3,
                           duration => 100,
-                          banned_interval => 200
+                          banned_interval => 2
                          });
 set_special_configs(_App) -> ok.
 
 end_per_suite(_Config) ->
     emqx_ct_helpers:stop_apps([]),
+    ekka_mnesia:delete_schema(),    %% Clean emqx_banned table
     ok.
 
 t_detect_check(_) ->
@@ -49,9 +52,24 @@ t_detect_check(_) ->
     false = emqx_flapping:detect(ClientInfo),
     false = emqx_banned:check(ClientInfo),
     true = emqx_flapping:detect(ClientInfo),
-    timer:sleep(100),
+    timer:sleep(50),
     true = emqx_banned:check(ClientInfo),
-    timer:sleep(200),
+    timer:sleep(3000),
     false = emqx_banned:check(ClientInfo),
+    Childrens = supervisor:which_children(emqx_cm_sup),
+    {flapping, Pid, _, _} = lists:keyfind(flapping, 1, Childrens),
+    gen_server:call(Pid, unexpected_msg),
+    gen_server:cast(Pid, unexpected_msg),
+    Pid ! test,
     ok = emqx_flapping:stop().
 
+t_expired_detecting(_) ->
+    ClientInfo = #{zone => external,
+                   clientid => <<"clientid">>,
+                   peerhost => {127,0,0,1}},
+    false = emqx_flapping:detect(ClientInfo),
+    ?assertEqual(true, lists:any(fun({flapping, <<"clientid">>, _, _, _}) -> true;
+                                    (_) -> false end, ets:tab2list(emqx_flapping))),
+    timer:sleep(200),
+    ?assertEqual(true, lists:all(fun({flapping, <<"clientid">>, _, _, _}) -> false;
+                                    (_) -> true end, ets:tab2list(emqx_flapping))).

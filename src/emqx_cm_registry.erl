@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -62,7 +62,7 @@ start_link() ->
 %% @doc Is the global registry enabled?
 -spec(is_enabled() -> boolean()).
 is_enabled() ->
-    emqx:get_env(enable_channel_registry, true).
+    emqx:get_env(enable_session_registry, true).
 
 %% @doc Register a global channel.
 -spec(register_channel(emqx_types:clientid()
@@ -108,7 +108,7 @@ init([]) ->
                 {attributes, record_info(fields, channel)},
                 {storage_properties, [{ets, [{read_concurrency, true},
                                              {write_concurrency, true}]}]}]),
-    ok = ekka_mnesia:copy_table(?TAB),
+    ok = ekka_mnesia:copy_table(?TAB, ram_copies),
     ok = ekka:monitor(membership),
     {ok, #{}}.
 

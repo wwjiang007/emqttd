@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
--include("emqx_mqtt.hrl").
+-include_lib("emqx/include/emqx_mqtt.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 all() -> emqx_ct:all(?MODULE).
@@ -37,6 +37,24 @@ t_new(_) ->
           ok = emqx_metrics:inc('metrics.test.cnt'),
           1 = emqx_metrics:val('metrics.test.cnt'),
           ok = emqx_metrics:new(gauge, 'metrics.test.total'),
+          0 = emqx_metrics:val('metrics.test.total'),
+          ok = emqx_metrics:inc('metrics.test.total'),
+          1 = emqx_metrics:val('metrics.test.total')
+      end).
+
+t_ensure(_) ->
+    with_metrics_server(
+      fun() ->
+          ok = emqx_metrics:ensure('metrics.test'),
+          ok = emqx_metrics:ensure('metrics.test'),
+          0 = emqx_metrics:val('metrics.test'),
+          ok = emqx_metrics:inc('metrics.test'),
+          1 = emqx_metrics:val('metrics.test'),
+          ok = emqx_metrics:ensure(counter, 'metrics.test.cnt'),
+          0 = emqx_metrics:val('metrics.test.cnt'),
+          ok = emqx_metrics:inc('metrics.test.cnt'),
+          1 = emqx_metrics:val('metrics.test.cnt'),
+          ok = emqx_metrics:ensure(gauge, 'metrics.test.total'),
           0 = emqx_metrics:val('metrics.test.total'),
           ok = emqx_metrics:inc('metrics.test.total'),
           1 = emqx_metrics:val('metrics.test.total')

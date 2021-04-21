@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -107,7 +107,7 @@ handle_call(Req, _From, State) ->
 handle_cast({async_submit, Task}, State) ->
     try run(Task)
     catch _:Error:Stacktrace ->
-        ?LOG(error, "Error: ~p, ~p", [Error, Stacktrace])
+        ?LOG(error, "Error: ~0p, ~0p", [Error, Stacktrace])
     end,
     {noreply, State};
 

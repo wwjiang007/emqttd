@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -63,11 +63,38 @@
         , reboot/0
         ]).
 
+%% Troubleshooting
+-export([ set_debug_secret/1
+        ]).
+
 -define(APP, ?MODULE).
 
--define(COPYRIGHT, "Copyright (c) 2019 EMQ Technologies Co., Ltd").
+-define(COPYRIGHT, "Copyright (c) 2020 EMQ Technologies Co., Ltd").
 
 -define(LICENSE_MESSAGE, "Licensed under the Apache License, Version 2.0").
+
+%% @hidden Path to the file which has debug_info encryption secret in it.
+%% Evaluate this function if there is a need to access encrypted debug_info.
+%% NOTE: Do not change the API to accept the secret text because it may
+%% get logged everywhere.
+set_debug_secret(PathToSecretFile) ->
+    SecretText =
+        case file:read_file(PathToSecretFile) of
+            {ok, Secret} ->
+                try string:trim(binary_to_list(Secret))
+                catch _ : _ -> error({badfile, PathToSecretFile})
+                end;
+            {error, Reason} ->
+                io:format("Failed to read debug_info encryption key file ~s: ~p~n",
+                          [PathToSecretFile, Reason]),
+                error(Reason)
+        end,
+    F = fun(init) -> ok;
+           (clear) -> ok;
+           ({debug_info, _Mode, _Module, _Filename}) -> SecretText
+        end,
+    _ = beam_lib:clear_crypto_key_fun(),
+    ok = beam_lib:crypto_key_fun(F).
 
 %%--------------------------------------------------------------------
 %% Bootstrap, is_running...
@@ -86,7 +113,7 @@ restart(ConfFile) ->
     reload_config(ConfFile),
     shutdown(),
     ok = application:stop(mnesia),
-    application:start(mnesia),
+    _ = application:start(mnesia),
     reboot().
 
 %% @doc Stop emqx application.
@@ -146,7 +173,7 @@ unsubscribe(Topic) ->
 -spec(topics() -> list(emqx_topic:topic())).
 topics() -> emqx_router:topics().
 
--spec(subscribers(emqx_topic:topic() | string()) -> list(emqx_types:subscriber())).
+-spec(subscribers(emqx_topic:topic() | string()) -> [pid()]).
 subscribers(Topic) ->
     emqx_broker:subscribers(iolist_to_binary(Topic)).
 
@@ -168,7 +195,9 @@ subscribed(SubId, Topic) when is_atom(SubId); is_binary(SubId) ->
 hook(HookPoint, Action) ->
     emqx_hooks:add(HookPoint, Action).
 
--spec(hook(emqx_hooks:hookpoint(), emqx_hooks:action(), emqx_hooks:filter() | integer())
+-spec(hook(emqx_hooks:hookpoint(),
+           emqx_hooks:action(),
+           emqx_hooks:filter() | integer() | list())
       -> ok | {error, already_exists}).
 hook(HookPoint, Action, Priority) when is_integer(Priority) ->
     emqx_hooks:add(HookPoint, Action, Priority);
@@ -182,7 +211,7 @@ hook(HookPoint, Action, InitArgs) when is_list(InitArgs) ->
 hook(HookPoint, Action, Filter, Priority) ->
     emqx_hooks:add(HookPoint, Action, Filter, Priority).
 
--spec(unhook(emqx_hooks:hookpoint(), emqx_hooks:action()) -> ok).
+-spec(unhook(emqx_hooks:hookpoint(), emqx_hooks:action() | {module(), atom()}) -> ok).
 unhook(HookPoint, Action) ->
     emqx_hooks:del(HookPoint, Action).
 
@@ -203,12 +232,22 @@ shutdown() ->
 
 shutdown(Reason) ->
     ?LOG(critical, "emqx shutdown for ~s", [Reason]),
-    emqx_alarm_handler:unload(),
-    emqx_plugins:unload(),
-    lists:foreach(fun application:stop/1, [emqx, ekka, cowboy, ranch, esockd, gproc]).
+    _ = emqx_alarm_handler:unload(),
+    _ = emqx_plugins:unload(),
+    lists:foreach(fun application:stop/1
+                 , lists:reverse(default_started_applications())
+                 ).
 
 reboot() ->
-    lists:foreach(fun application:start/1, [gproc, esockd, ranch, cowboy, ekka, emqx]).
+    lists:foreach(fun application:start/1 , default_started_applications()).
+
+-ifdef(EMQX_ENTERPRISE).
+default_started_applications() ->
+    [gproc, esockd, ranch, cowboy, ekka, emqx].
+-else.
+default_started_applications() ->
+    [gproc, esockd, ranch, cowboy, ekka, emqx, emqx_modules].
+-endif.
 
 %%--------------------------------------------------------------------
 %% Internal functions

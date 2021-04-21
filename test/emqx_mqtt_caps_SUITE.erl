@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,22 +19,17 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
--include("emqx_mqtt.hrl").
+-include_lib("emqx/include/emqx_mqtt.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 all() -> emqx_ct:all(?MODULE).
-
-% t_get_caps(_) ->
-%     error('TODO').
-
-% t_default(_) ->
-%     error('TODO').
 
 t_check_pub(_) ->
     PubCaps = #{max_qos_allowed => ?QOS_1,
                 retain_available => false
                },
-    ok = emqx_zone:set_env(zone, '$mqtt_pub_caps', PubCaps),
+    emqx_zone:set_env(zone, '$mqtt_pub_caps', PubCaps),
+    timer:sleep(50),
     ok = emqx_mqtt_caps:check_pub(zone, #{qos => ?QOS_1,
                                           retain => false}),
     PubFlags1 = #{qos => ?QOS_2, retain => false},
@@ -43,7 +38,7 @@ t_check_pub(_) ->
     PubFlags2 = #{qos => ?QOS_1, retain => true},
     ?assertEqual({error, ?RC_RETAIN_NOT_SUPPORTED},
                  emqx_mqtt_caps:check_pub(zone, PubFlags2)),
-    true = emqx_zone:unset_env(zone, '$mqtt_pub_caps').
+    emqx_zone:unset_env(zone, '$mqtt_pub_caps').
 
 t_check_sub(_) ->
     SubOpts = #{rh  => 0,
@@ -56,7 +51,8 @@ t_check_sub(_) ->
                 shared_subscription => false,
                 wildcard_subscription => false
                },
-    ok = emqx_zone:set_env(zone, '$mqtt_sub_caps', SubCaps),
+    emqx_zone:set_env(zone, '$mqtt_sub_caps', SubCaps),
+    timer:sleep(50),
     ok = emqx_mqtt_caps:check_sub(zone, <<"topic">>, SubOpts),
     ?assertEqual({error, ?RC_TOPIC_FILTER_INVALID},
                  emqx_mqtt_caps:check_sub(zone, <<"a/b/c/d">>, SubOpts)),
@@ -64,4 +60,4 @@ t_check_sub(_) ->
                  emqx_mqtt_caps:check_sub(zone, <<"+/#">>, SubOpts)),
     ?assertEqual({error, ?RC_SHARED_SUBSCRIPTIONS_NOT_SUPPORTED},
                  emqx_mqtt_caps:check_sub(zone, <<"topic">>, SubOpts#{share => true})),
-    true = emqx_zone:unset_env(zone, '$mqtt_sub_caps').
+    emqx_zone:unset_env(zone, '$mqtt_pub_caps').

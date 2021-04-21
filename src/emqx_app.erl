@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,54 +20,109 @@
 
 -export([ start/2
         , stop/1
+        , get_description/0
+        , get_release/0
         ]).
 
 -define(APP, emqx).
+
+-include("emqx_release.hrl").
 
 %%--------------------------------------------------------------------
 %% Application callbacks
 %%--------------------------------------------------------------------
 
 start(_Type, _Args) ->
+    set_backtrace_depth(),
+    print_otp_version_warning(),
     print_banner(),
+    %% Load application first for ekka_mnesia scanner
+    _ = load_ce_modules(),
     ekka:start(),
     {ok, Sup} = emqx_sup:start_link(),
-    ok = emqx_modules:load(),
+    ok = start_autocluster(),
     ok = emqx_plugins:init(),
-    emqx_plugins:load(),
-    emqx_boot:is_enabled(listeners)
-      andalso (ok = emqx_listeners:start()),
-    start_autocluster(),
+    _ = emqx_plugins:load(),
+    _ = start_ce_modules(),
+    emqx_boot:is_enabled(listeners) andalso (ok = emqx_listeners:start()),
     register(emqx, self()),
-    emqx_alarm_handler:load(),
+    ok = emqx_alarm_handler:load(),
     print_vsn(),
     {ok, Sup}.
 
 -spec(stop(State :: term()) -> term()).
 stop(_State) ->
-    emqx_alarm_handler:unload(),
+    ok = emqx_alarm_handler:unload(),
     emqx_boot:is_enabled(listeners)
-      andalso emqx_listeners:stop(),
-    emqx_modules:unload().
+      andalso emqx_listeners:stop().
+
+set_backtrace_depth() ->
+    Depth = application:get_env(?APP, backtrace_depth, 16),
+    _ = erlang:system_flag(backtrace_depth, Depth),
+    ok.
+
+-ifndef(EMQX_ENTERPRISE).
+load_ce_modules() ->
+    application:load(emqx_modules).
+start_ce_modules() ->
+    application:ensure_all_started(emqx_modules).
+-else.
+load_ce_modules() ->
+    ok.
+start_ce_modules() ->
+    ok.
+-endif.
 
 %%--------------------------------------------------------------------
 %% Print Banner
 %%--------------------------------------------------------------------
 
+-if(?OTP_RELEASE> 22).
+print_otp_version_warning() -> ok.
+-else.
+print_otp_version_warning() ->
+    io:format("WARNING: Running on Erlang/OTP version ~p. Recommended: 23~n",
+              [?OTP_RELEASE]).
+-endif.
+
+
 print_banner() ->
     io:format("Starting ~s on node ~s~n", [?APP, node()]).
 
+-ifndef(TEST).
 print_vsn() ->
-    {ok, Descr} = application:get_key(description),
-    {ok, Vsn} = application:get_key(vsn),
-    io:format("~s ~s is running now!~n", [Descr, Vsn]).
+    io:format("~s ~s is running now!~n", [get_description(), get_release()]).
+-else.
+print_vsn() ->
+    ok.
+-endif.
+
+get_description() ->
+    {ok, Descr0} = application:get_key(?APP, description),
+    case os:getenv("EMQX_DESCRIPTION") of
+        false -> Descr0;
+        "" -> Descr0;
+        Str -> string:strip(Str, both, $\n)
+    end.
+
+get_release() ->
+    case lists:keyfind(emqx_vsn, 1, ?MODULE:module_info(compile)) of
+        false ->    %% For TEST build or depedency build.
+            release_in_macro();
+        {_, Vsn} -> %% For emqx release build
+            VsnStr = release_in_macro(),
+            1 = string:str(Vsn, VsnStr), %% assert
+            Vsn
+    end.
+
+release_in_macro() ->
+    element(2, ?EMQX_RELEASE).
 
 %%--------------------------------------------------------------------
 %% Autocluster
 %%--------------------------------------------------------------------
-
 start_autocluster() ->
     ekka:callback(prepare, fun emqx:shutdown/1),
     ekka:callback(reboot,  fun emqx:reboot/0),
-    ekka:autocluster(?APP).
-
+    _ = ekka:autocluster(?APP), %% returns 'ok' or a pid or 'any()' as in spec
+    ok.

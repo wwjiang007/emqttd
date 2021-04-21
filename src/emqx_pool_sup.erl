@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,6 +17,8 @@
 -module(emqx_pool_sup).
 
 -behaviour(supervisor).
+
+-include("types.hrl").
 
 -export([spec/1, spec/2]).
 
@@ -46,12 +48,12 @@ spec(ChildId, Args) ->
 start_link() ->
     start_link(?POOL, random, {?POOL, start_link, []}).
 
--spec(start_link(atom() | tuple(), atom(), mfa())
+-spec(start_link(atom() | tuple(), atom(), mfargs())
       -> {ok, pid()} | {error, term()}).
 start_link(Pool, Type, MFA) ->
     start_link(Pool, Type, emqx_vm:schedulers(), MFA).
 
--spec(start_link(atom() | tuple(), atom(), pos_integer(), mfa())
+-spec(start_link(atom() | tuple(), atom(), pos_integer(), mfargs())
       -> {ok, pid()} | {error, term()}).
 start_link(Pool, Type, Size, MFA) ->
     supervisor:start_link(?MODULE, [Pool, Type, Size, MFA]).

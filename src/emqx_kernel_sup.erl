@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,27 +27,31 @@ start_link() ->
 
 init([]) ->
     {ok, {{one_for_one, 10, 100},
-          [child_spec(emqx_pool_sup, supervisor),
+          [child_spec(emqx_global_gc, worker),
+           child_spec(emqx_pool_sup, supervisor),
            child_spec(emqx_hooks, worker),
            child_spec(emqx_stats, worker),
            child_spec(emqx_metrics, worker),
            child_spec(emqx_ctl, worker),
            child_spec(emqx_zone, worker)]}}.
 
-child_spec(M, worker) ->
+child_spec(M, Type) ->
+    child_spec(M, Type, []).
+
+child_spec(M, worker, Args) ->
     #{id       => M,
-      start    => {M, start_link, []},
+      start    => {M, start_link, Args},
       restart  => permanent,
       shutdown => 5000,
       type     => worker,
-      modules  => [M]};
+      modules  => [M]
+     };
 
-child_spec(M, supervisor) ->
+child_spec(M, supervisor, Args) ->
     #{id       => M,
-      start    => {M, start_link, []},
+      start    => {M, start_link, Args},
       restart  => permanent,
       shutdown => infinity,
       type     => supervisor,
-      modules  => [M]}.
-
-
+      modules  => [M]
+     }.

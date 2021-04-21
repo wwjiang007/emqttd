@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,8 +27,11 @@
         , retain/1
         ]).
 
+%% Field APIs
 -export([ proto_name/1
         , proto_ver/1
+        , info/2
+        , set_props/2
         ]).
 
 %% Check API
@@ -94,6 +97,130 @@ proto_ver(?CONNECT_PACKET(ConnPkt)) ->
     proto_ver(ConnPkt);
 proto_ver(#mqtt_packet_connect{proto_ver = Ver}) ->
     Ver.
+
+%%--------------------------------------------------------------------
+%% Field Info
+%%--------------------------------------------------------------------
+
+info(proto_name, #mqtt_packet_connect{proto_name = Name}) ->
+    Name;
+info(proto_ver, #mqtt_packet_connect{proto_ver = Ver}) ->
+    Ver;
+info(is_bridge, #mqtt_packet_connect{is_bridge = IsBridge}) ->
+    IsBridge;
+info(clean_start, #mqtt_packet_connect{clean_start = CleanStart}) ->
+    CleanStart;
+info(will_flag, #mqtt_packet_connect{will_flag = WillFlag}) ->
+    WillFlag;
+info(will_qos, #mqtt_packet_connect{will_qos = WillQoS}) ->
+    WillQoS;
+info(will_retain, #mqtt_packet_connect{will_retain = WillRetain}) ->
+    WillRetain;
+info(keepalive, #mqtt_packet_connect{keepalive = KeepAlive}) ->
+    KeepAlive;
+info(properties, #mqtt_packet_connect{properties = Props}) ->
+    Props;
+info(clientid, #mqtt_packet_connect{clientid = ClientId}) ->
+    ClientId;
+info(will_props, #mqtt_packet_connect{will_props = WillProps}) ->
+    WillProps;
+info(will_topic, #mqtt_packet_connect{will_topic = WillTopic}) ->
+    WillTopic;
+info(will_payload, #mqtt_packet_connect{will_payload = Payload}) ->
+    Payload;
+info(username, #mqtt_packet_connect{username = Username}) ->
+    Username;
+info(password, #mqtt_packet_connect{password = Password}) ->
+    Password;
+
+info(ack_flags, #mqtt_packet_connack{ack_flags = Flags}) ->
+    Flags;
+info(reason_code, #mqtt_packet_connack{reason_code = RC}) ->
+    RC;
+info(properties, #mqtt_packet_connack{properties = Props}) ->
+    Props;
+
+info(topic_name, #mqtt_packet_publish{topic_name = Topic}) ->
+    Topic;
+info(packet_id, #mqtt_packet_publish{packet_id = PacketId}) ->
+    PacketId;
+info(properties, #mqtt_packet_publish{properties = Props}) ->
+    Props;
+
+info(packet_id, #mqtt_packet_puback{packet_id = PacketId}) ->
+    PacketId;
+info(reason_code, #mqtt_packet_puback{reason_code = RC}) ->
+    RC;
+info(properties,  #mqtt_packet_puback{properties = Props}) ->
+    Props;
+
+info(packet_id, #mqtt_packet_subscribe{packet_id = PacketId}) ->
+    PacketId;
+info(properties, #mqtt_packet_subscribe{properties = Props}) ->
+    Props;
+info(topic_filters, #mqtt_packet_subscribe{topic_filters = Topics}) ->
+    Topics;
+
+info(packet_id, #mqtt_packet_suback{packet_id = PacketId}) ->
+    PacketId;
+info(properties, #mqtt_packet_suback{properties = Props}) ->
+    Props;
+info(reason_codes, #mqtt_packet_suback{reason_codes = RCs}) ->
+    RCs;
+
+info(packet_id, #mqtt_packet_unsubscribe{packet_id = PacketId}) ->
+    PacketId;
+info(properties, #mqtt_packet_unsubscribe{properties = Props}) ->
+    Props;
+info(topic_filters, #mqtt_packet_unsubscribe{topic_filters = Topics}) ->
+    Topics;
+
+info(packet_id, #mqtt_packet_unsuback{packet_id = PacketId}) ->
+    PacketId;
+info(properties, #mqtt_packet_unsuback{properties = Props}) ->
+    Props;
+info(reason_codes, #mqtt_packet_unsuback{reason_codes = RCs}) ->
+    RCs;
+
+info(reason_code, #mqtt_packet_disconnect{reason_code = RC}) ->
+    RC;
+info(properties, #mqtt_packet_disconnect{properties = Props}) ->
+    Props;
+
+info(reason_code, #mqtt_packet_auth{reason_code = RC}) ->
+    RC;
+info(properties, #mqtt_packet_auth{properties = Props}) ->
+    Props.
+
+set_props(Props, #mqtt_packet_connect{} = Pkt) ->
+    Pkt#mqtt_packet_connect{properties = Props};
+
+set_props(Props, #mqtt_packet_connack{} = Pkt) ->
+    Pkt#mqtt_packet_connack{properties = Props};
+
+set_props(Props, #mqtt_packet_publish{} = Pkt) ->
+    Pkt#mqtt_packet_publish{properties = Props};
+
+set_props(Props, #mqtt_packet_puback{} = Pkt) ->
+    Pkt#mqtt_packet_puback{properties = Props};
+
+set_props(Props, #mqtt_packet_subscribe{} = Pkt) ->
+    Pkt#mqtt_packet_subscribe{properties = Props};
+
+set_props(Props, #mqtt_packet_suback{} = Pkt) ->
+    Pkt#mqtt_packet_suback{properties = Props};
+
+set_props(Props, #mqtt_packet_unsubscribe{} = Pkt) ->
+    Pkt#mqtt_packet_unsubscribe{properties = Props};
+
+set_props(Props, #mqtt_packet_unsuback{} = Pkt) ->
+    Pkt#mqtt_packet_unsuback{properties = Props};
+
+set_props(Props, #mqtt_packet_disconnect{} = Pkt) ->
+    Pkt#mqtt_packet_disconnect{properties = Props};
+
+set_props(Props, #mqtt_packet_auth{} = Pkt) ->
+    Pkt#mqtt_packet_auth{properties = Props}.
 
 %%--------------------------------------------------------------------
 %% Check MQTT Packet
@@ -218,6 +345,9 @@ check_will_msg(#mqtt_packet_connect{will_flag = false}, _Caps) ->
 check_will_msg(#mqtt_packet_connect{will_retain = true},
                _Opts = #{mqtt_retain_available := false}) ->
     {error, ?RC_RETAIN_NOT_SUPPORTED};
+check_will_msg(#mqtt_packet_connect{will_qos = WillQoS},
+               _Opts = #{max_qos_allowed := MaxQoS}) when WillQoS > MaxQoS ->
+    {error, ?RC_QOS_NOT_SUPPORTED};
 check_will_msg(#mqtt_packet_connect{will_topic = WillTopic}, _Opts) ->
     try emqx_topic:validate(name, WillTopic) of
         true -> ok
@@ -243,34 +373,26 @@ validate_topic_filters(TopicFilters) ->
               emqx_topic:validate(TopicFilter)
       end, TopicFilters).
 
--spec(to_message(emqx_types:clientinfo(), emqx_ypes:packet()) -> emqx_types:message()).
-to_message(ClientInfo, Packet) ->
-    to_message(ClientInfo, #{}, Packet).
+-spec(to_message(emqx_types:packet(), emqx_types:clientid()) -> emqx_types:message()).
+to_message(Packet, ClientId) ->
+    to_message(Packet, ClientId, #{}).
 
 %% @doc Transform Publish Packet to Message.
--spec(to_message(emqx_types:clientinfo(), map(), emqx_ypes:packet())
-      -> emqx_types:message()).
-to_message(#{protocol := Protocol,
-             clientid := ClientId,
-             username := Username,
-             peerhost := PeerHost
-            }, Headers,
-           #mqtt_packet{header   = #mqtt_packet_header{type   = ?PUBLISH,
-                                                       retain = Retain,
-                                                       qos    = QoS,
-                                                       dup    = Dup
-                                                      },
-                        variable = #mqtt_packet_publish{topic_name = Topic,
-                                                        properties = Props
-                                                       },
-                        payload  = Payload
-                       }) ->
+-spec(to_message(emqx_types:packet(), emqx_types:clientid(), map()) -> emqx_types:message()).
+to_message(#mqtt_packet{
+                header = #mqtt_packet_header{
+                            type   = ?PUBLISH,
+                            retain = Retain,
+                            qos    = QoS,
+                            dup    = Dup},
+                variable = #mqtt_packet_publish{
+                                topic_name = Topic,
+                                properties = Props},
+                payload = Payload
+            }, ClientId, Headers) ->
     Msg = emqx_message:make(ClientId, QoS, Topic, Payload),
-    Headers1 = merge_props(Headers#{protocol => Protocol,
-                                    username => Username,
-                                    peerhost => PeerHost
-                                   }, Props),
-    Msg#message{flags = #{dup => Dup, retain => Retain}, headers = Headers1}.
+    Msg#message{flags = #{dup => Dup, retain => Retain},
+                headers = Headers#{properties => Props}}.
 
 -spec(will_msg(#mqtt_packet_connect{}) -> emqx_types:message()).
 will_msg(#mqtt_packet_connect{will_flag = false}) ->
@@ -283,13 +405,8 @@ will_msg(#mqtt_packet_connect{clientid     = ClientId,
                               will_props   = Props,
                               will_payload = Payload}) ->
     Msg = emqx_message:make(ClientId, QoS, Topic, Payload),
-    Headers = merge_props(#{username => Username}, Props),
-    Msg#message{flags = #{dup => false, retain => Retain}, headers = Headers}.
-
-merge_props(Headers, undefined) ->
-    Headers;
-merge_props(Headers, Props) ->
-    maps:merge(Headers, Props).
+    Msg#message{flags = #{dup => false, retain => Retain},
+                headers = #{username => Username, properties => Props}}.
 
 %% @doc Format packet
 -spec(format(emqx_types:packet()) -> iolist()).
@@ -312,7 +429,7 @@ format_variable(undefined, _) ->
 format_variable(Variable, undefined) ->
     format_variable(Variable);
 format_variable(Variable, Payload) ->
-    io_lib:format("~s, Payload=~p", [format_variable(Variable), Payload]).
+    io_lib:format("~s, Payload=~0p", [format_variable(Variable), Payload]).
 
 format_variable(#mqtt_packet_connect{
                  proto_ver    = ProtoVer,
@@ -330,7 +447,7 @@ format_variable(#mqtt_packet_connect{
     Format = "ClientId=~s, ProtoName=~s, ProtoVsn=~p, CleanStart=~s, KeepAlive=~p, Username=~s, Password=~s",
     Args = [ClientId, ProtoName, ProtoVer, CleanStart, KeepAlive, Username, format_password(Password)],
     {Format1, Args1} = if
-                        WillFlag -> {Format ++ ", Will(Q~p, R~p, Topic=~s, Payload=~p)",
+                        WillFlag -> {Format ++ ", Will(Q~p, R~p, Topic=~s, Payload=~0p)",
                                      Args ++ [WillQoS, i(WillRetain), WillTopic, WillPayload]};
                         true -> {Format, Args}
                        end,
@@ -348,8 +465,9 @@ format_variable(#mqtt_packet_publish{topic_name = TopicName,
                                      packet_id  = PacketId}) ->
     io_lib:format("Topic=~s, PacketId=~p", [TopicName, PacketId]);
 
-format_variable(#mqtt_packet_puback{packet_id = PacketId}) ->
-    io_lib:format("PacketId=~p", [PacketId]);
+format_variable(#mqtt_packet_puback{packet_id = PacketId,
+                                    reason_code = ReasonCode}) ->
+    io_lib:format("PacketId=~p, ReasonCode=~p", [PacketId, ReasonCode]);
 
 format_variable(#mqtt_packet_subscribe{packet_id     = PacketId,
                                        topic_filters = TopicFilters}) ->
@@ -366,10 +484,11 @@ format_variable(#mqtt_packet_suback{packet_id = PacketId,
 format_variable(#mqtt_packet_unsuback{packet_id = PacketId}) ->
     io_lib:format("PacketId=~p", [PacketId]);
 
-format_variable(PacketId) when is_integer(PacketId) ->
-    io_lib:format("PacketId=~p", [PacketId]);
+format_variable(#mqtt_packet_auth{reason_code = ReasonCode}) ->
+    io_lib:format("ReasonCode=~p", [ReasonCode]);
 
-format_variable(undefined) -> undefined.
+format_variable(PacketId) when is_integer(PacketId) ->
+    io_lib:format("PacketId=~p", [PacketId]).
 
 format_password(undefined) -> undefined;
 format_password(_Password) -> '******'.

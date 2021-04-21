@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -47,6 +47,7 @@
              , subopts/0
              , reason_code/0
              , alias_id/0
+             , topic_aliases/0
              , properties/0
              ]).
 
@@ -62,6 +63,9 @@
 
 -export_type([ payload/0
              , message/0
+             , flag/0
+             , flags/0
+             , headers/0
              ]).
 
 -export_type([ deliver/0
@@ -74,8 +78,7 @@
              , route_entry/0
              ]).
 
--export_type([ alarm/0
-             , plugin/0
+-export_type([ plugin/0
              , banned/0
              , command/0
              ]).
@@ -90,7 +93,9 @@
 
 -type(ver() :: ?MQTT_PROTO_V3
              | ?MQTT_PROTO_V4
-             | ?MQTT_PROTO_V5).
+             | ?MQTT_PROTO_V5
+             | non_neg_integer()).
+
 -type(qos() :: ?QOS_0 | ?QOS_1 | ?QOS_2).
 -type(qos_name() :: qos0 | at_most_once |
                     qos1 | at_least_once |
@@ -106,41 +111,45 @@
 -type(conninfo() :: #{socktype := socktype(),
                       sockname := peername(),
                       peername := peername(),
-                      peercert := esockd_peercert:peercert(),
+                      peercert := nossl | undefined | esockd_peercert:peercert(),
                       conn_mod := module(),
-                      proto_name := binary(),
-                      proto_ver := ver(),
-                      clean_start := boolean(),
-                      clientid := clientid(),
-                      username := username(),
-                      conn_props := properties(),
-                      connected := boolean(),
-                      connected_at := erlang:timestamp(),
-                      keepalive := 0..16#FFFF,
-                      receive_maximum := non_neg_integer(),
-                      expiry_interval := non_neg_integer(),
+                      proto_name => binary(),
+                      proto_ver => ver(),
+                      clean_start => boolean(),
+                      clientid => clientid(),
+                      username => username(),
+                      conn_props => properties(),
+                      connected => boolean(),
+                      connected_at => non_neg_integer(),
+                      disconnected_at => non_neg_integer(),
+                      keepalive => 0..16#FFFF,
+                      receive_maximum => non_neg_integer(),
+                      expiry_interval => non_neg_integer(),
                       atom() => term()
                      }).
--type(clientinfo() :: #{zone         := zone(),
+-type(clientinfo() :: #{zone         := maybe(zone()),
                         protocol     := protocol(),
                         peerhost     := peerhost(),
+                        sockport     := non_neg_integer(),
                         clientid     := clientid(),
                         username     := username(),
-                        peercert     := esockd_peercert:peercert(),
                         is_bridge    := boolean(),
                         is_superuser := boolean(),
                         mountpoint   := maybe(binary()),
-                        ws_cookie    := maybe(list()),
+                        ws_cookie    => maybe(list()),
                         password     => maybe(binary()),
                         auth_result  => auth_result(),
                         anonymous    => boolean(),
+                        cn           => binary(),
+                        dn           => binary(),
                         atom()       => term()
                        }).
 -type(clientid() :: binary()|atom()).
 -type(username() :: maybe(binary())).
 -type(password() :: maybe(binary())).
 -type(peerhost() :: inet:ip_address()).
--type(peername() :: {inet:ip_address(), inet:port_number()}).
+-type(peername() :: {inet:ip_address(), inet:port_number()}
+                  | inet:returned_non_ip_address()).
 -type(protocol() :: mqtt | 'mqtt-sn' | coap | lwm2m | stomp | none | atom()).
 -type(auth_result() :: success
                      | client_identifier_not_valid
@@ -164,6 +173,8 @@
 -type(reason_code() :: 0..16#FF).
 -type(packet_id() :: 1..16#FFFF).
 -type(alias_id() :: 0..16#FFFF).
+-type(topic_aliases() :: #{inbound => maybe(map()),
+                           outbound => maybe(map())}).
 -type(properties() :: #{atom() => term()}).
 -type(topic_filters() :: list({topic(), subopts()})).
 -type(packet() :: #mqtt_packet{}).
@@ -172,23 +183,31 @@
 -type(subscriber() :: {pid(), subid()}).
 -type(payload() :: binary() | iodata()).
 -type(message() :: #message{}).
+-type(flag() :: sys | dup | retain | atom()).
+-type(flags() :: #{flag() := boolean()}).
+-type(headers() :: #{proto_ver => ver(),
+                     protocol => protocol(),
+                     username => username(),
+                     peerhost => peerhost(),
+                     properties => properties(),
+                     atom() => term()}).
+
 -type(banned() :: #banned{}).
 -type(deliver() :: {deliver, topic(), message()}).
 -type(delivery() :: #delivery{}).
--type(deliver_result() :: ok | {error, term()}).
--type(publish_result() :: [ {node(), topic(), deliver_result()}
-                          | {share, topic(), deliver_result()}]).
+-type(deliver_result() :: ok | {ok, non_neg_integer()} | {error, term()}).
+-type(publish_result() :: [{node(), topic(), deliver_result()} |
+                           {share, topic(), deliver_result()}]).
 -type(route() :: #route{}).
 -type(sub_group() :: tuple() | binary()).
 -type(route_entry() :: {topic(), node()} | {topic, sub_group()}).
--type(alarm() :: #alarm{}).
 -type(plugin() :: #plugin{}).
 -type(command() :: #command{}).
 
 -type(caps() :: emqx_mqtt_caps:caps()).
 -type(attrs() :: #{atom() => term()}).
 -type(infos() :: #{atom() => term()}).
--type(stats() :: #{atom() => non_neg_integer()|stats()}).
+-type(stats() :: [{atom(), term()}]).
 
 -type(oom_policy() :: #{message_queue_len => non_neg_integer(),
                         max_heap_size => non_neg_integer()

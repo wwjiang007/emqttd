@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -33,9 +33,18 @@
 
 -export([empty/0]).
 
+-ifdef(TEST).
+-compile(export_all).
+-compile(nowarn_export_all).
+-endif.
+
+-type(triple() :: {root | binary(), emqx_topic:word(), binary()}).
+
 %% Mnesia tables
 -define(TRIE_TAB, emqx_trie).
 -define(TRIE_NODE_TAB, emqx_trie_node).
+
+-elvis([{elvis_style, function_naming_convention, disable}]).
 
 %%--------------------------------------------------------------------
 %% Mnesia bootstrap
@@ -62,9 +71,9 @@ mnesia(boot) ->
 
 mnesia(copy) ->
     %% Copy trie table
-    ok = ekka_mnesia:copy_table(?TRIE_TAB),
+    ok = ekka_mnesia:copy_table(?TRIE_TAB, ram_copies),
     %% Copy trie_node table
-    ok = ekka_mnesia:copy_table(?TRIE_NODE_TAB).
+    ok = ekka_mnesia:copy_table(?TRIE_NODE_TAB, ram_copies).
 
 %%--------------------------------------------------------------------
 %% Trie APIs
@@ -80,7 +89,7 @@ insert(Topic) when is_binary(Topic) ->
             write_trie_node(TrieNode#trie_node{topic = Topic});
         [] ->
             %% Add trie path
-            ok = lists:foreach(fun add_path/1, emqx_topic:triples(Topic)),
+            ok = lists:foreach(fun add_path/1, triples(Topic)),
             %% Add last node
             write_trie_node(#trie_node{node_id = Topic, topic = Topic})
     end.
@@ -92,7 +101,7 @@ match(Topic) when is_binary(Topic) ->
     [Name || #trie_node{topic = Name} <- TrieNodes, Name =/= undefined].
 
 %% @doc Lookup a trie node.
--spec(lookup(NodeId :: binary()) -> [#trie_node{}]).
+-spec(lookup(NodeId :: binary()) -> [trie_node()]).
 lookup(NodeId) ->
     mnesia:read(?TRIE_NODE_TAB, NodeId).
 
@@ -102,7 +111,7 @@ delete(Topic) when is_binary(Topic) ->
     case mnesia:wread({?TRIE_NODE_TAB, Topic}) of
         [#trie_node{edge_count = 0}] ->
             ok = mnesia:delete({?TRIE_NODE_TAB, Topic}),
-            delete_path(lists:reverse(emqx_topic:triples(Topic)));
+            delete_path(lists:reverse(triples(Topic)));
         [TrieNode] ->
             write_trie_node(TrieNode#trie_node{topic = undefined});
         [] -> ok
@@ -116,6 +125,22 @@ empty() ->
 %%--------------------------------------------------------------------
 %% Internal functions
 %%--------------------------------------------------------------------
+
+%% @doc Topic to triples.
+-spec(triples(emqx_topic:topic()) -> list(triple())).
+triples(Topic) when is_binary(Topic) ->
+    triples(emqx_topic:words(Topic), root, []).
+
+triples([], _Parent, Acc) ->
+    lists:reverse(Acc);
+triples([W|Words], Parent, Acc) ->
+    Node = join(Parent, W),
+    triples(Words, Node, [{Parent, W, Node}|Acc]).
+
+join(root, W) ->
+    emqx_topic:join([W]);
+join(Parent, W) ->
+    emqx_topic:join([Parent, W]).
 
 %% @private
 %% @doc Add a path to the trie.

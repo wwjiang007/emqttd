@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -106,7 +106,7 @@ run_command(Cmd, Args) when is_atom(Cmd) ->
                 _ -> ok
             catch
                 _:Reason:Stacktrace ->
-                    ?ERROR("CMD Error:~p, Stacktrace:~p", [Reason, Stacktrace]),
+                    ?ERROR("CMD Error:~0p, Stacktrace:~0p", [Reason, Stacktrace]),
                     {error, Reason}
             end;
         [] ->
@@ -125,9 +125,15 @@ get_commands() ->
     [{Cmd, M, F} || {{_Seq, Cmd}, {M, F}, _Opts} <- ets:tab2list(?CMD_TAB)].
 
 help() ->
-    print("Usage: ~s~n", [?MODULE]),
-    [begin print("~80..-s~n", [""]), Mod:Cmd(usage) end
-     || {_, {Mod, Cmd}, _} <- ets:tab2list(?CMD_TAB)].
+    case ets:tab2list(?CMD_TAB) of
+        [] ->
+            print("No commands available.~n");
+        Cmds ->
+            print("Usage: ~s~n", [?MODULE]),
+            lists:foreach(fun({_, {Mod, Cmd}, _}) ->
+                    print("~110..-s~n", [""]), Mod:Cmd(usage)
+                end, Cmds)
+    end.
 
 -spec(print(io:format()) -> ok).
 print(Msg) ->
@@ -153,7 +159,7 @@ format(Msg) ->
 format(Format, Args) ->
     lists:flatten(io_lib:format(Format, Args)).
 
--spec(format_usage([cmd_usage()]) -> ok).
+-spec(format_usage([cmd_usage()]) -> [string()]).
 format_usage(UsageList) ->
     lists:map(
         fun({CmdParams, Desc}) ->
@@ -165,7 +171,7 @@ format_usage(CmdParams, Desc) ->
     CmdLines = split_cmd(CmdParams),
     DescLines = split_cmd(Desc),
     lists:foldl(fun({CmdStr, DescStr}, Usage) ->
-                        Usage ++ format("~-48s# ~s~n", [CmdStr, DescStr])
+                        Usage ++ format("~-70s# ~s~n", [CmdStr, DescStr])
                 end, "", zip_cmd(CmdLines, DescLines)).
 
 %%--------------------------------------------------------------------

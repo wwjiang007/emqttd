@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ start_link() ->
 
 init([]) ->
     Childs = [child_spec(emqx_sys),
+              child_spec(emqx_alarm,   [config(alarm)]),
               child_spec(emqx_sys_mon, [config(sysmon)]),
               child_spec(emqx_os_mon,  [config(os_mon)]),
               child_spec(emqx_vm_mon,  [config(vm_mon)])],

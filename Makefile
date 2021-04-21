@@ -1,131 +1,149 @@
-## shallow clone for speed
+$(shell $(CURDIR)/scripts/git-hooks-init.sh)
+REBAR_VERSION = 3.14.3-emqx-6
+REBAR = $(CURDIR)/rebar3
+BUILD = $(CURDIR)/build
+SCRIPTS = $(CURDIR)/scripts
+export PKG_VSN ?= $(shell $(CURDIR)/pkg-vsn.sh)
+export EMQX_DESC ?= EMQ X
+export EMQX_CE_DASHBOARD_VERSION ?= v4.3.0-rc.1
+ifeq ($(OS),Windows_NT)
+	export REBAR_COLOR=none
+endif
 
-REBAR_GIT_CLONE_OPTIONS += --depth 1
-export REBAR_GIT_CLONE_OPTIONS
+PROFILE ?= emqx
+REL_PROFILES := emqx emqx-edge
+PKG_PROFILES := emqx-pkg emqx-edge-pkg
+PROFILES := $(REL_PROFILES) $(PKG_PROFILES) default
 
-SUITES_FILES := $(shell find test -name '*_SUITE.erl')
+export REBAR_GIT_CLONE_OPTIONS += --depth=1
 
-CT_SUITES := $(foreach value,$(SUITES_FILES),$(shell val=$$(basename $(value) .erl); echo $${val%_*}))
-
-CT_NODE_NAME = emqxct@127.0.0.1
-
-RUN_NODE_NAME = emqxdebug@127.0.0.1
+.PHONY: default
+default: $(REBAR) $(PROFILE)
 
 .PHONY: all
-all: compile
+all: $(REBAR) $(PROFILES)
 
-.PHONY: tests
-tests: eunit ct
+.PHONY: ensure-rebar3
+ensure-rebar3:
+	@$(SCRIPTS)/fail-on-old-otp-version.escript
+	@$(SCRIPTS)/ensure-rebar3.sh $(REBAR_VERSION)
 
-.PHONY: run
-run: run_setup unlock
-	@rebar3 as test get-deps
-	@rebar3 as test auto --name $(RUN_NODE_NAME) --script scripts/run_emqx.escript
+$(REBAR): ensure-rebar3
 
-.PHONY: run_setup
-run_setup:
-	@erl -noshell -eval \
-	    "{ok, [[HOME]]} = init:get_argument(home), \
-		 FilePath = HOME ++ \"/.config/rebar3/rebar.config\", \
-		 case file:consult(FilePath) of \
-             {ok, Term} -> \
-				 NewTerm = case lists:keyfind(plugins, 1, Term) of \
-	                           false -> [{plugins, [rebar3_auto]} | Term]; \
-	                	  	   {plugins, OldPlugins} -> \
-		          		           NewPlugins0 = OldPlugins -- [rebar3_auto], \
-	             	     	       NewPlugins = [rebar3_auto | NewPlugins0], \
-                                   lists:keyreplace(plugins, 1, Term, {plugins, NewPlugins}) \
-	                       end, \
-	             ok = file:write_file(FilePath, [io_lib:format(\"~p.\n\", [I]) || I <- NewTerm]); \
-            _Enoent -> \
-		        os:cmd(\"mkdir -p ~/.config/rebar3/ \"), \
-	            NewTerm=[{plugins, [rebar3_auto]}], \
-	            ok = file:write_file(FilePath, [io_lib:format(\"~p.\n\", [I]) || I <- NewTerm]) \
-	     end, \
-	     halt(0)."
-
-.PHONY: shell
-shell:
-	@rebar3 as test auto
-
-compile: unlock
-	@rebar3 compile
-
-unlock:
-	@rebar3 unlock
-
-clean: distclean
-
-## Cuttlefish escript is built by default when cuttlefish app (as dependency) was built
-CUTTLEFISH_SCRIPT := _build/default/lib/cuttlefish/cuttlefish
-
-.PHONY: cover
-cover:
-	@rebar3 cover
-
-.PHONY: coveralls
-coveralls:
-	@rebar3 coveralls send
-
-.PHONY: xref
-xref:
-	@rebar3 xref
-
-.PHONY: deps
-deps:
-	@rebar3 get-deps
+.PHONY: get-dashboard
+get-dashboard:
+	@$(SCRIPTS)/get-dashboard.sh
 
 .PHONY: eunit
-eunit:
-	@rebar3 eunit -v
+eunit: $(REBAR)
+	@ENABLE_COVER_COMPILE=1 $(REBAR) eunit -v -c
 
-.PHONY: ct_setup
-ct_setup:
-	rebar3 as test compile
-	@mkdir -p data
-	@if [ ! -f data/loaded_plugins ]; then touch data/loaded_plugins; fi
-	@ln -s -f '../../../../etc' _build/test/lib/emqx/
-	@ln -s -f '../../../../data' _build/test/lib/emqx/
+.PHONY: proper
+proper: $(REBAR)
+	@ENABLE_COVER_COMPILE=1 $(REBAR) proper -d test/props -c
 
 .PHONY: ct
-ct: ct_setup
-	@rebar3 ct -v --name $(CT_NODE_NAME) --suite=$(shell echo $(foreach var,$(CT_SUITES),test/$(var)_SUITE) | tr ' ' ',')
+ct: $(REBAR)
+	@ENABLE_COVER_COMPILE=1 $(REBAR) ct --name 'test@127.0.0.1' -c -v
 
-## Run one single CT with rebar3
-## e.g. make ct-one-suite suite=emqx_bridge
-.PHONY: $(SUITES:%=ct-%)
-$(CT_SUITES:%=ct-%): ct_setup
-	@rebar3 ct -v --readable=false --name $(CT_NODE_NAME) --suite=$(@:ct-%=%)_SUITE --cover
+APPS=$(shell $(CURDIR)/scripts/find-apps.sh)
 
-.PHONY: app.config
-app.config: $(CUTTLEFISH_SCRIPT) etc/gen.emqx.conf
-	$(CUTTLEFISH_SCRIPT) -l info -e etc/ -c etc/gen.emqx.conf -i priv/emqx.schema -d data/
+## app/name-ct targets are intended for local tests hence cover is not enabled
+.PHONY: $(APPS:%=%-ct)
+define gen-app-ct-target
+$1-ct:
+	$(REBAR) ct --name 'test@127.0.0.1' -v --suite $(shell $(CURDIR)/scripts/find-suites.sh $1)
+endef
+$(foreach app,$(APPS),$(eval $(call gen-app-ct-target,$(app))))
 
-$(CUTTLEFISH_SCRIPT):
-	@rebar3 get-deps
-	@if [ ! -f cuttlefish ]; then make -C _build/default/lib/cuttlefish; fi
+## apps/name-prop targets
+.PHONY: $(APPS:%=%-prop)
+define gen-app-prop-target
+$1-prop:
+	$(REBAR) proper -d test/props -v -m $(shell $(CURDIR)/scripts/find-props.sh $1)
+endef
+$(foreach app,$(APPS),$(eval $(call gen-app-prop-target,$(app))))
 
-bbmustache:
-	@git clone https://github.com/soranoba/bbmustache.git && cd bbmustache && ./rebar3 compile && cd ..
+.PHONY: cover
+cover: $(REBAR)
+	@ENABLE_COVER_COMPILE=1 $(REBAR) cover
 
-# This hack is to generate a conf file for testing
-# relx overlay is used for release
-etc/gen.emqx.conf: bbmustache etc/emqx.conf
-	@erl -noshell -pa bbmustache/_build/default/lib/bbmustache/ebin -eval \
-		"{ok, Temp} = file:read_file('etc/emqx.conf'), \
-		{ok, Vars0} = file:consult('vars'), \
-		Vars = [{atom_to_list(N), list_to_binary(V)} || {N, V} <- Vars0], \
-		Targ = bbmustache:render(Temp, Vars), \
-		ok = file:write_file('etc/gen.emqx.conf', Targ), \
-		halt(0)."
+.PHONY: coveralls
+coveralls: $(REBAR)
+	@ENABLE_COVER_COMPILE=1 $(REBAR) as test coveralls send
 
-.PHONY: gen-clean
-gen-clean:
-	@rm -rf bbmustache
-	@rm -f etc/gen.emqx.conf etc/emqx.conf.rendered
+.PHONY: $(REL_PROFILES)
+$(REL_PROFILES:%=%): $(REBAR) get-dashboard
+	@$(REBAR) as $(@) do compile,release
 
-.PHONY: distclean
-distclean: gen-clean
-	@rm -rf Mnesia.*
-	@rm -rf _build cover deps logs log data
-	@rm -f rebar.lock compile_commands.json cuttlefish erl_crash.dump
+## Not calling rebar3 clean because
+## 1. rebar3 clean relies on rebar3, meaning it reads config, fetches dependencies etc.
+## 2. it's slow
+## NOTE: this does not force rebar3 to fetch new version dependencies
+## make clean-all to delete all fetched dependencies for a fresh start-over
+.PHONY: clean $(PROFILES:%=clean-%)
+clean: $(PROFILES:%=clean-%)
+$(PROFILES:%=clean-%):
+	@if [ -d _build/$(@:clean-%=%) ]; then \
+		rm -rf _build/$(@:clean-%=%)/rel; \
+		find _build/$(@:clean-%=%) -name '*.beam' -o -name '*.so' -o -name '*.app' -o -name '*.appup' -o -name '*.o' -o -name '*.d' -type f | xargs rm -f; \
+	fi
+
+.PHONY: clean-all
+clean-all:
+	@rm -rf _build
+
+.PHONY: deps-all
+deps-all: $(REBAR) $(PROFILES:%=deps-%)
+
+## deps-<profile> is used in CI scripts to download deps and the
+## share downloads between CI steps and/or copied into containers
+## which may not have the right credentials
+.PHONY: $(PROFILES:%=deps-%)
+$(PROFILES:%=deps-%): $(REBAR) get-dashboard
+	@$(REBAR) as $(@:deps-%=%) get-deps
+
+.PHONY: xref
+xref: $(REBAR)
+	@$(REBAR) as check xref
+
+.PHONY: dialyzer
+dialyzer: $(REBAR)
+	@$(REBAR) as check dialyzer
+
+.PHONY: $(REL_PROFILES:%=relup-%)
+$(REL_PROFILES:%=relup-%): $(REBAR)
+ifneq ($(OS),Windows_NT)
+	@$(BUILD) $(@:relup-%=%) relup
+endif
+
+.PHONY: $(REL_PROFILES:%=%-tar) $(PKG_PROFILES:%=%-tar)
+$(REL_PROFILES:%=%-tar) $(PKG_PROFILES:%=%-tar): $(REBAR) get-dashboard $(CONF_SEGS)
+	@$(BUILD) $(subst -tar,,$(@)) tar
+
+## zip targets depend on the corresponding relup and tar artifacts
+.PHONY: $(REL_PROFILES:%=%-zip)
+define gen-zip-target
+$1-zip: relup-$1 $1-tar
+	@$(BUILD) $1 zip
+endef
+ALL_ZIPS = $(REL_PROFILES) $(PKG_PROFILES)
+$(foreach zt,$(ALL_ZIPS),$(eval $(call gen-zip-target,$(zt))))
+
+## A pkg target depend on a regular release profile zip to include relup,
+## and also a -pkg suffixed profile tar (without relup) for making deb/rpm package
+.PHONY: $(PKG_PROFILES)
+define gen-pkg-target
+$1: $(subst -pkg,,$1)-zip $1-tar
+	@$(BUILD) $1 pkg
+endef
+$(foreach pt,$(PKG_PROFILES),$(eval $(call gen-pkg-target,$(pt))))
+
+.PHONY: run
+run: $(PROFILE) quickrun
+
+.PHONY: quickrun
+quickrun:
+	./_build/$(PROFILE)/rel/emqx/bin/emqx console
+
+include docker.mk

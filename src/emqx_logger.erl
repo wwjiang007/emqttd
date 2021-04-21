@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -48,14 +48,26 @@
 
 -export([ get_primary_log_level/0
         , get_log_handlers/0
+        , get_log_handlers/1
         , get_log_handler/1
+        ]).
+
+-export([ start_log_handler/1
+        , stop_log_handler/1
         ]).
 
 -export([parse_transform/2]).
 
 -type(peername_str() :: list()).
 -type(logger_dst() :: file:filename() | console | unknown).
--type(logger_handler_info() :: {logger:handler_id(), logger:level(), logger_dst()}).
+-type(logger_handler_info() :: #{
+        id := logger:handler_id(),
+        level := logger:level(),
+        dst := logger_dst(),
+        status := started | stopped
+      }).
+
+-define(stopped_handlers, {?MODULE, stopped_handlers}).
 
 %%--------------------------------------------------------------------
 %% APIs
@@ -147,16 +159,64 @@ set_primary_log_level(Level) ->
 
 -spec(get_log_handlers() -> [logger_handler_info()]).
 get_log_handlers() ->
-    lists:map(fun log_hanlder_info/1, logger:get_handler_config()).
+    get_log_handlers(started) ++ get_log_handlers(stopped).
+
+-spec(get_log_handlers(started | stopped) -> [logger_handler_info()]).
+get_log_handlers(started) ->
+    [log_hanlder_info(Conf, started) || Conf <- logger:get_handler_config()];
+get_log_handlers(stopped) ->
+    [log_hanlder_info(Conf, stopped) || Conf <- list_stopped_handler_config()].
 
 -spec(get_log_handler(logger:handler_id()) -> logger_handler_info()).
 get_log_handler(HandlerId) ->
-    {ok, Conf} = logger:get_handler_config(HandlerId),
-    log_hanlder_info(Conf).
+    case logger:get_handler_config(HandlerId) of
+        {ok, Conf} ->
+            log_hanlder_info(Conf, started);
+        {error, _} ->
+            case read_stopped_handler_config(HandlerId) of
+                error -> {error, {not_found, HandlerId}};
+                {ok, Conf} -> log_hanlder_info(Conf, stopped)
+            end
+    end.
+
+-spec(start_log_handler(logger:handler_id()) -> ok | {error, term()}).
+start_log_handler(HandlerId) ->
+    case lists:member(HandlerId, logger:get_handler_ids()) of
+        true -> ok;
+        false ->
+            case read_stopped_handler_config(HandlerId) of
+                error -> {error, {not_found, HandlerId}};
+                {ok, Conf = #{module := Mod}} ->
+                    case logger:add_handler(HandlerId, Mod, Conf) of
+                        ok -> remove_stopped_handler_config(HandlerId);
+                        {error, _} = Error -> Error
+                    end
+            end
+    end.
+
+-spec(stop_log_handler(logger:handler_id()) -> ok | {error, term()}).
+stop_log_handler(HandlerId) ->
+    case logger:get_handler_config(HandlerId) of
+        {ok, Conf} ->
+            case logger:remove_handler(HandlerId) of
+                ok -> save_stopped_handler_config(HandlerId, Conf);
+                Error -> Error
+            end;
+        {error, _} ->
+            {error, {not_started, HandlerId}}
+    end.
 
 -spec(set_log_handler_level(logger:handler_id(), logger:level()) -> ok | {error, term()}).
 set_log_handler_level(HandlerId, Level) ->
-    logger:set_handler_config(HandlerId, level, Level).
+    case logger:set_handler_config(HandlerId, level, Level) of
+        ok -> ok;
+        {error, _} ->
+            case read_stopped_handler_config(HandlerId) of
+                error -> {error, {not_found, HandlerId}};
+                {ok, Conf} ->
+                    save_stopped_handler_config(HandlerId, Conf#{level => Level})
+            end
+    end.
 
 %% @doc Set both the primary and all handlers level in one command
 -spec(set_log_level(logger:handler_id()) -> ok | {error, term()}).
@@ -178,24 +238,26 @@ parse_transform(AST, _Opts) ->
 %%--------------------------------------------------------------------
 
 log_hanlder_info(#{id := Id, level := Level, module := logger_std_h,
-                   config := #{type := Type}}) when Type =:= standard_io;
-                                                    Type =:= standard_error ->
-    {Id, Level, console};
+                   config := #{type := Type}}, Status) when
+                Type =:= standard_io;
+                Type =:= standard_error ->
+    #{id => Id, level => Level, dst => console, status => Status};
 log_hanlder_info(#{id := Id, level := Level, module := logger_std_h,
-                   config := Config = #{type := file}}) ->
-    {Id, Level, maps:get(file, Config, atom_to_list(Id))};
+                   config := Config = #{type := file}}, Status) ->
+    #{id => Id, level => Level, status => Status,
+      dst => maps:get(file, Config, atom_to_list(Id))};
 
 log_hanlder_info(#{id := Id, level := Level, module := logger_disk_log_h,
-                   config := #{file := Filename}}) ->
-    {Id, Level, Filename};
-log_hanlder_info(#{id := Id, level := Level, module := _OtherModule}) ->
-    {Id, Level, unknown}.
+                   config := #{file := Filename}}, Status) ->
+    #{id => Id, level => Level, dst => Filename, status => Status};
+log_hanlder_info(#{id := Id, level := Level, module := _OtherModule}, Status) ->
+    #{id => Id, level => Level, dst => unknown, status => Status}.
 
 %% set level for all log handlers in one command
 set_all_log_handlers_level(Level) ->
     set_all_log_handlers_level(get_log_handlers(), Level, []).
 
-set_all_log_handlers_level([{ID, Level, _Dst} | List], NewLevel, ChangeHistory) ->
+set_all_log_handlers_level([#{id := ID, level := Level} | List], NewLevel, ChangeHistory) ->
     case set_log_handler_level(ID, NewLevel) of
         ok -> set_all_log_handlers_level(List, NewLevel, [{ID, Level} | ChangeHistory]);
         {error, Error} ->
@@ -206,9 +268,37 @@ set_all_log_handlers_level([], _NewLevel, _NewHanlder) ->
     ok.
 
 rollback([{ID, Level} | List]) ->
-    emqx_logger:set_log_handler_level(ID, Level),
+    _ = set_log_handler_level(ID, Level),
     rollback(List);
 rollback([]) -> ok.
+
+save_stopped_handler_config(HandlerId, Config) ->
+    case persistent_term:get(?stopped_handlers, undefined) of
+        undefined ->
+            persistent_term:put(?stopped_handlers, #{HandlerId => Config});
+        ConfList ->
+            persistent_term:put(?stopped_handlers, ConfList#{HandlerId => Config})
+    end.
+read_stopped_handler_config(HandlerId) ->
+    case persistent_term:get(?stopped_handlers, undefined) of
+        undefined -> error;
+        ConfList -> maps:find(HandlerId, ConfList)
+    end.
+remove_stopped_handler_config(HandlerId) ->
+    case persistent_term:get(?stopped_handlers, undefined) of
+        undefined -> ok;
+        ConfList ->
+            case maps:find(HandlerId, ConfList) of
+                error -> ok;
+                {ok, _} ->
+                    persistent_term:put(?stopped_handlers, maps:remove(HandlerId, ConfList))
+            end
+    end.
+list_stopped_handler_config() ->
+    case persistent_term:get(?stopped_handlers, undefined) of
+        undefined -> [];
+        ConfList -> maps:values(ConfList)
+    end.
 
 %% @doc The following parse-transforms stripped off the module attribute named
 %% `-logger_header(Header)` (if there's one) from the source code, and then
@@ -221,7 +311,7 @@ trans([{eof, L} | AST], LogHeader, ResAST) ->
 trans([{attribute, _, module, _Mod} = M | AST], Header, ResAST) ->
     trans(AST, Header, [export_header_fun(), M | ResAST]);
 trans([{attribute, _, logger_header, Header} | AST], _, ResAST) ->
-    io_lib:printable_list(Header) orelse error({invalid_string, Header}),
+    io_lib:printable_list(Header) orelse erlang:error({invalid_string, Header}),
     trans(AST, Header, ResAST);
 trans([F | AST], LogHeader, ResAST) ->
     trans(AST, LogHeader, [F | ResAST]).

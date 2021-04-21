@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -15,8 +15,6 @@
 %%--------------------------------------------------------------------
 
 -module(emqx_access_rule).
-
--include("emqx.hrl").
 
 %% APIs
 -export([ match/3
@@ -71,14 +69,13 @@ compile(topic, {eq, Topic}) ->
     {eq, emqx_topic:words(bin(Topic))};
 compile(topic, Topic) ->
     Words = emqx_topic:words(bin(Topic)),
-    case 'pattern?'(Words) of
+    case pattern(Words) of
         true  -> {pattern, Words};
         false -> Words
     end.
 
-'pattern?'(Words) ->
-    lists:member(<<"%u">>, Words)
-        orelse lists:member(<<"%c">>, Words).
+pattern(Words) ->
+    lists:member(<<"%u">>, Words) orelse lists:member(<<"%c">>, Words).
 
 bin(L) when is_list(L) ->
     list_to_binary(L);

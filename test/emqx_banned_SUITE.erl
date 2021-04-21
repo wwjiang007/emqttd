@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
--include("emqx.hrl").
+-include_lib("emqx/include/emqx.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 all() -> emqx_ct:all(?MODULE).
@@ -45,6 +45,7 @@ t_add_delete(_) ->
                     },
     ok = emqx_banned:create(Banned),
     ?assertEqual(1, emqx_banned:info(size)),
+
     ok = emqx_banned:delete({clientid, <<"TestClient">>}),
     ?assertEqual(0, emqx_banned:info(size)).
 

@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
--include("emqx.hrl").
+-include_lib("emqx/include/emqx.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("common_test/include/ct.hrl").
 
@@ -60,7 +60,6 @@ t_get_env(_) ->
     application:unset_env(emqx, undefined_key).
 
 t_emqx_pubsub_api(_) ->
-    emqx:start(),
     true = emqx:is_running(node()),
     {ok, C} = emqtt:start_link([{host, "localhost"}, {clientid, "myclient"}]),
     {ok, _} = emqtt:connect(C),
@@ -78,7 +77,10 @@ t_emqx_pubsub_api(_) ->
     ?assertEqual([self()], emqx:subscribers(Topic)),
     ?assertEqual([self()], emqx:subscribers(Topic1)),
     ?assertEqual([self()], emqx:subscribers(Topic2)),
-    ?assertEqual([{Topic,#{qos => 0,subid => ClientId}}, {Topic1,#{qos => 1,subid => ClientId}}, {Topic2,#{qos => 2,subid => ClientId}}], emqx:subscriptions(self())),
+
+    ?assertEqual([{Topic,  #{nl => 0, qos => 0, rap => 0, rh => 0, subid => ClientId}},
+                  {Topic1, #{nl => 0, qos => 1, rap => 0, rh => 0, subid => ClientId}},
+                  {Topic2, #{nl => 0, qos => 2, rap => 0, rh => 0, subid => ClientId}}], emqx:subscriptions(self())),
     ?assertEqual(true, emqx:subscribed(self(), Topic)),
     ?assertEqual(true, emqx:subscribed(ClientId, Topic)),
     ?assertEqual(true, emqx:subscribed(self(), Topic1)),

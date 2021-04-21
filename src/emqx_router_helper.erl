@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -53,6 +53,8 @@
 -define(ROUTING_NODE, emqx_routing_node).
 -define(LOCK, {?MODULE, cleanup_routes}).
 
+-dialyzer({nowarn_function, [cleanup_routes/1]}).
+
 %%--------------------------------------------------------------------
 %% Mnesia bootstrap
 %%--------------------------------------------------------------------
@@ -66,7 +68,7 @@ mnesia(boot) ->
                 {storage_properties, [{ets, [{read_concurrency, true}]}]}]);
 
 mnesia(copy) ->
-    ok = ekka_mnesia:copy_table(?ROUTING_NODE).
+    ok = ekka_mnesia:copy_table(?ROUTING_NODE, ram_copies).
 
 %%--------------------------------------------------------------------
 %% API
@@ -114,7 +116,8 @@ handle_cast(Msg, State) ->
     ?LOG(error, "Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
-handle_info({mnesia_table_event, {write, {?ROUTING_NODE, Node, _}, _}}, State = #{nodes := Nodes}) ->
+handle_info({mnesia_table_event, {write, {?ROUTING_NODE, Node, _}, _}},
+            State = #{nodes := Nodes}) ->
     case ekka:is_member(Node) orelse lists:member(Node, Nodes) of
         true -> {noreply, State};
         false ->

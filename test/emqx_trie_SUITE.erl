@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
--include("emqx.hrl").
+-include_lib("emqx/include/emqx.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 -define(TRIE, emqx_trie).
@@ -140,6 +140,12 @@ t_delete3(_) ->
               {?TRIE:lookup(<<"sensor">>), ?TRIE:lookup(<<"sensor/+">>)}
           end,
     ?assertEqual({atomic, {[], []}}, trans(Fun)).
+
+t_triples(_) ->
+    Triples = [{root,<<"a">>,<<"a">>},
+               {<<"a">>,<<"b">>,<<"a/b">>},
+               {<<"a/b">>,<<"c">>,<<"a/b/c">>}],
+    ?assertEqual(Triples, emqx_trie:triples(<<"a/b/c">>)).
 
 clear_tables() ->
     lists:foreach(fun mnesia:clear_table/1, ?TRIE_TABS).

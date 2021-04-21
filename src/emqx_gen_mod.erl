@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -16,19 +16,8 @@
 
 -module(emqx_gen_mod).
 
--ifdef(use_specs).
-
 -callback(load(Opts :: any()) -> ok | {error, term()}).
 
 -callback(unload(State :: term()) -> term()).
 
--else.
-
--export([behaviour_info/1]).
-
-behaviour_info(callbacks) ->
-    [{load, 1}, {unload, 1}];
-behaviour_info(_Other) ->
-    undefined.
-
--endif.
+-callback(description() -> any()).
