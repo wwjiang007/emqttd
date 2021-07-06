@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -101,16 +101,6 @@
         , delete_banned/1
         ]).
 
--ifndef(EMQX_ENTERPRISE).
-
--export([ enable_telemetry/0
-        , disable_telemetry/0
-        , get_telemetry_status/0
-        , get_telemetry_data/0
-        ]).
-
--endif.
-
 %% Common Table API
 -export([ item/2
         , max_row_limit/0
@@ -139,7 +129,7 @@ node_info(Node) when Node =:= node() ->
     Info#{node              => node(),
           otp_release       => iolist_to_binary(otp_rel()),
           memory_total      => proplists:get_value(allocated, Memory),
-          memory_used       => proplists:get_value(used, Memory),
+          memory_used       => proplists:get_value(total, Memory),
           process_available => erlang:system_info(process_limit),
           process_used      => erlang:system_info(process_count),
           max_fds           => proplists:get_value(max_fds, lists:usort(lists:flatten(erlang:system_info(check_io)))),
@@ -498,38 +488,6 @@ create_banned(Banned) ->
 delete_banned(Who) ->
     emqx_banned:delete(Who).
 
-
-
-%%--------------------------------------------------------------------
-%% Telemtry API
-%%--------------------------------------------------------------------
-
--ifndef(EMQX_ENTERPRISE).
-
-enable_telemetry() ->
-    lists:foreach(fun enable_telemetry/1,ekka_mnesia:running_nodes()).
-
-enable_telemetry(Node) when Node =:= node() ->
-    emqx_telemetry:enable();
-enable_telemetry(Node) ->
-    rpc_call(Node, enable_telemetry, [Node]).
-
-disable_telemetry() ->
-    lists:foreach(fun disable_telemetry/1,ekka_mnesia:running_nodes()).
-
-disable_telemetry(Node) when Node =:= node() ->
-    emqx_telemetry:disable();
-disable_telemetry(Node) ->
-    rpc_call(Node, disable_telemetry, [Node]).
-
-get_telemetry_status() ->
-    [{enabled, emqx_telemetry:is_enabled()}].
-
-get_telemetry_data() ->
-    emqx_telemetry:get_telemetry().
-
--endif.
-
 %%--------------------------------------------------------------------
 %% Common Table API
 %%--------------------------------------------------------------------
@@ -553,7 +511,7 @@ rpc_call(Node, Fun, Args) ->
     end.
 
 otp_rel() ->
-    lists:concat(["R", erlang:system_info(otp_release), "/", erlang:system_info(version)]).
+    lists:concat([emqx_vm:get_otp_version(), "/", erlang:system_info(version)]).
 
 check_row_limit(Tables) ->
     check_row_limit(Tables, max_row_limit()).
@@ -567,7 +525,7 @@ check_row_limit([Tab|Tables], Limit) ->
     end.
 
 max_row_limit() ->
-    application:get_env(?APP, max_row_limit, ?MAX_ROW_LIMIT).
+    emqx_config:get([?APP, max_row_limit], ?MAX_ROW_LIMIT).
 
 table_size(Tab) -> ets:info(Tab, size).
 

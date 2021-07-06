@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@
       , {'client.connected',    {emqx_exhook_handler, on_client_connected,     []}}
       , {'client.disconnected', {emqx_exhook_handler, on_client_disconnected,  []}}
       , {'client.authenticate', {emqx_exhook_handler, on_client_authenticate,  []}}
-      , {'client.check_acl',    {emqx_exhook_handler, on_client_check_acl,     []}}
+      , {'client.authorize',    {emqx_exhook_handler, on_client_authorize,     []}}
       , {'client.subscribe',    {emqx_exhook_handler, on_client_subscribe,     []}}
       , {'client.unsubscribe',  {emqx_exhook_handler, on_client_unsubscribe,   []}}
       , {'session.created',     {emqx_exhook_handler, on_session_created,      []}}

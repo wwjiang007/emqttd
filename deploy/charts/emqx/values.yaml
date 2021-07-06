@@ -14,6 +14,9 @@ image:
   # pullSecrets:
   # - myRegistryKeySecretName
 
+## Forces the recreation of pods during helm upgrades. This can be useful to update configuration values even if the container image did not change.
+recreatePods: false
+
 persistence:
   enabled: false
   size: 20Mi
@@ -84,7 +87,6 @@ emqxLoadedPlugins: >
   {emqx_bridge_mqtt, false}.
 
 emqxLoadedModules: >
-  {emqx_mod_acl_internal, true}.
   {emqx_mod_presence, true}.
   {emqx_mod_delayed, false}.
   {emqx_mod_rewrite, false}.

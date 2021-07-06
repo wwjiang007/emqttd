@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,8 +28,8 @@
 -define(APP, emqx_prometheus).
 
 start(_StartType, _StartArgs) ->
-    PushGateway = application:get_env(?APP, push_gateway, undefined),
-    Interval = application:get_env(?APP, interval, 5000),
+    PushGateway = emqx_config:get([?APP, push_gateway_server], undefined),
+    Interval = emqx_config:get([?APP, interval], 15000),
     emqx_prometheus_sup:start_link(PushGateway, Interval).
 
 stop(_State) ->

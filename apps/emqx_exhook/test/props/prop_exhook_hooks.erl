@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -109,14 +109,14 @@ prop_client_authenticate() ->
             true
         end).
 
-prop_client_check_acl() ->
+prop_client_authorize() ->
     ?ALL({ClientInfo0, PubSub, Topic, Result},
          {clientinfo(), oneof([publish, subscribe]),
           topic(), oneof([allow, deny])},
         begin
             ClientInfo = inject_magic_into(username, ClientInfo0),
             OutResult = emqx_hooks:run_fold(
-                          'client.check_acl',
+                          'client.authorize',
                           [ClientInfo, PubSub, Topic],
                           Result),
             ExpectedOutResult = case maps:get(username, ClientInfo) of
@@ -127,7 +127,7 @@ prop_client_check_acl() ->
                                  end,
             ?assertEqual(ExpectedOutResult, OutResult),
 
-            {'on_client_check_acl', Resp} = emqx_exhook_demo_svr:take(),
+            {'on_client_authorize', Resp} = emqx_exhook_demo_svr:take(),
             Expected =
                 #{result => aclresult_to_bool(Result),
                   type => pubsub_to_enum(PubSub),
@@ -452,7 +452,9 @@ from_clientinfo(ClientInfo) ->
       protocol => stringfy(maps:get(protocol, ClientInfo)),
       mountpoint => maybe(maps:get(mountpoint, ClientInfo, <<>>)),
       is_superuser => maps:get(is_superuser, ClientInfo, false),
-      anonymous => maps:get(anonymous, ClientInfo, true)
+      anonymous => maps:get(anonymous, ClientInfo, true),
+      cn => maybe(maps:get(cn, ClientInfo, <<>>)),
+      dn => maybe(maps:get(dn, ClientInfo, <<>>))
     }.
 
 from_message(Msg) ->

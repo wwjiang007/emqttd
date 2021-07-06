@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -29,40 +29,22 @@
 -define(LOG_HANDLER_ID, [file, default]).
 
 all() ->
-    [{group, manage_apps},
-     {group, check_cli}].
-
-groups() ->
-    [{manage_apps, [sequence],
-      [t_app
-      ]},
-      {check_cli, [sequence],
-       [t_cli,
-        t_log_cmd,
-        t_mgmt_cmd,
-        t_status_cmd,
-        t_clients_cmd,
-        t_vm_cmd,
-        t_plugins_cmd,
-        t_trace_cmd,
-        t_broker_cmd,
-        t_router_cmd,
-        t_subscriptions_cmd,
-        t_listeners_cmd_old,
-        t_listeners_cmd_new
-       ]}].
-
-apps() ->
-    [emqx_management, emqx_auth_mnesia, emqx_modules].
+    emqx_ct:all(?MODULE).
 
 init_per_suite(Config) ->
     ekka_mnesia:start(),
     emqx_mgmt_auth:mnesia(boot),
-    emqx_ct_helpers:start_apps(apps()),
+    emqx_ct_helpers:start_apps([emqx_retainer, emqx_management], fun set_special_configs/1),
     Config.
 
 end_per_suite(_Config) ->
-    emqx_ct_helpers:stop_apps(apps()).
+    emqx_ct_helpers:stop_apps([emqx_management, emqx_retainer]).
+
+set_special_configs(emqx_management) ->
+    emqx_config:put([emqx_management], #{listeners => [#{protocol => "http", port => 8081}]}),
+    ok;
+set_special_configs(_App) ->
+    ok.
 
 t_app(_Config) ->
     {ok, AppSecret} = emqx_mgmt_auth:add_app(<<"app_id">>, <<"app_name">>),
@@ -71,16 +53,6 @@ t_app(_Config) ->
     ?assertEqual({<<"app_id">>, AppSecret,
                   <<"app_name">>, <<"Application user">>,
                   true, undefined},
-                 lists:keyfind(<<"app_id">>, 1, emqx_mgmt_auth:list_apps())),
-    emqx_mgmt_auth:del_app(<<"app_id">>),
-    %% Use the default application secret
-    application:set_env(emqx_management, application, [{default_secret, <<"public">>}]),
-    {ok, AppSecret1} = emqx_mgmt_auth:add_app(
-                         <<"app_id">>, <<"app_name">>, <<"app_desc">>, true, undefined),
-    ?assert(emqx_mgmt_auth:is_authorized(<<"app_id">>, AppSecret1)),
-    ?assertEqual(AppSecret1, emqx_mgmt_auth:get_appsecret(<<"app_id">>)),
-    ?assertEqual(AppSecret1, <<"public">>),
-    ?assertEqual({<<"app_id">>, AppSecret1, <<"app_name">>, <<"app_desc">>, true, undefined},
                  lists:keyfind(<<"app_id">>, 1, emqx_mgmt_auth:list_apps())),
     emqx_mgmt_auth:del_app(<<"app_id">>),
     application:set_env(emqx_management, application, []),
@@ -133,7 +105,8 @@ t_mgmt_cmd(_) ->
 t_status_cmd(_) ->
     % ct:pal("start testing status command"),
     mock_print(),
-    ?assertMatch({match, _}, re:run(emqx_mgmt_cli:status([]), "is running")),
+    %% init internal status seem to be always 'starting' when running ct tests
+    ?assertMatch({match, _}, re:run(emqx_mgmt_cli:status([]), "Node\s.*@.*\sis\sstart(ed|ing)")),
     meck:unload().
 
 t_broker_cmd(_) ->
@@ -315,12 +288,12 @@ t_plugins_cmd(_) ->
     meck:expect(emqx_plugins, reload, fun(_) -> ok end),
     ?assertEqual(emqx_mgmt_cli:plugins(["list"]), ok),
     ?assertEqual(
-       emqx_mgmt_cli:plugins(["unload", "emqx_auth_mnesia"]),
-       "Plugin emqx_auth_mnesia unloaded successfully.\n"
+       emqx_mgmt_cli:plugins(["unload", "emqx_retainer"]),
+       "Plugin emqx_retainer unloaded successfully.\n"
       ),
     ?assertEqual(
-       emqx_mgmt_cli:plugins(["load", "emqx_auth_mnesia"]),
-       "Plugin emqx_auth_mnesia loaded successfully.\n"
+       emqx_mgmt_cli:plugins(["load", "emqx_retainer"]),
+       "Plugin emqx_retainer loaded successfully.\n"
       ),
     ?assertEqual(
        emqx_mgmt_cli:plugins(["unload", "emqx_management"]),

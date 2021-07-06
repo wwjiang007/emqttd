@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -40,6 +40,7 @@ all() ->
     , {group, test_grp_4_discover}
     , {group, test_grp_5_write_attr}
     , {group, test_grp_6_observe}
+    , {group, test_grp_8_object_19}
     ].
 
 suite() -> [{timetrap, {seconds, 90}}].
@@ -98,9 +99,9 @@ groups() ->
         ]},
         {test_grp_8_object_19, [RepeatOpt], [
             case80_specail_object_19_1_0_write,
-            case80_specail_object_19_0_0_notify,
-            case80_specail_object_19_0_0_response,
-            case80_normal_object_19_0_0_read
+            case80_specail_object_19_0_0_notify
+            %case80_specail_object_19_0_0_response,
+            %case80_normal_object_19_0_0_read
         ]},
         {test_grp_9_psm_queue_mode, [RepeatOpt], [
             case90_psm_mode,
@@ -1655,6 +1656,7 @@ case80_specail_object_19_1_0_write(Config) ->
                     <<"value">> => base64:encode(<<12345:32>>)
                 }
                },
+
     CommandJson = emqx_json:encode(Command),
     test_mqtt_broker:publish(CommandTopic, CommandJson, 0),
     timer:sleep(50),
@@ -1663,7 +1665,7 @@ case80_specail_object_19_1_0_write(Config) ->
     Path2 = get_coap_path(Options2),
     ?assertEqual(put, Method2),
     ?assertEqual(<<"/19/1/0">>, Path2),
-    ?assertEqual(<<12345:32>>, Payload2),
+    ?assertEqual(<<3:2, 0:1, 0:2, 4:3, 0, 12345:32>>, Payload2),
     timer:sleep(50),
 
     test_send_coap_response(UdpSock, "127.0.0.1", ?PORT, {ok, changed}, #coap_content{}, Request2, true),
@@ -1672,6 +1674,7 @@ case80_specail_object_19_1_0_write(Config) ->
     ReadResult = emqx_json:encode(#{
                                 <<"requestID">> => CmdId, <<"cacheID">> => CmdId,
                                 <<"data">> => #{
+                                    <<"reqPath">> => <<"/19/1/0">>,
                                     <<"code">> => <<"2.04">>,
                                     <<"codeMsg">> => <<"changed">>
                                 },
@@ -1886,8 +1889,11 @@ std_register(UdpSock, Epn, ObjectList, MsgId1, RespTopic) ->
     timer:sleep(100).
 
 resolve_uri(Uri) ->
-    {ok, {Scheme, _UserInfo, Host, PortNo, Path, Query}} =
-        http_uri:parse(Uri, [{scheme_defaults, [{coap, ?DEFAULT_COAP_PORT}, {coaps, ?DEFAULT_COAPS_PORT}]}]),
+    {ok, #{scheme := Scheme,
+           host := Host,
+           port := PortNo,
+           path := Path} = URIMap} = emqx_http_lib:uri_parse(Uri),
+    Query = maps:get(query, URIMap, ""),
     {ok, PeerIP} = inet:getaddr(Host, inet),
     {Scheme, {PeerIP, PortNo}, split_path(Path), split_query(Query)}.
 
@@ -1896,7 +1902,7 @@ split_path([$/]) -> [];
 split_path([$/ | Path]) -> split_segments(Path, $/, []).
 
 split_query([]) -> [];
-split_query([$? | Path]) -> split_segments(Path, $&, []).
+split_query(Path) -> split_segments(Path, $&, []).
 
 split_segments(Path, Char, Acc) ->
     case string:rchr(Path, Char) of
@@ -1908,7 +1914,7 @@ split_segments(Path, Char, Acc) ->
     end.
 
 make_segment(Seg) ->
-    list_to_binary(http_uri:decode(Seg)).
+    list_to_binary(emqx_http_lib:uri_decode(Seg)).
 
 
 get_coap_path(Options) ->

@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -41,6 +41,30 @@ get(#{node := Node}, _Params) ->
 format(Node, {error, Reason}) -> #{node => Node, error => Reason};
 
 format(_Node, Info = #{memory_total := Total, memory_used := Used}) ->
-    Info#{memory_total := emqx_mgmt_util:kmg(Total),
-          memory_used  := emqx_mgmt_util:kmg(Used)}.
+    {ok, SysPathBinary} = file:get_cwd(),
+     SysPath = list_to_binary(SysPathBinary),
+     ConfigPath = <<SysPath/binary, "/etc/emqx.conf">>,
+     LogPath = case log_path() of
+                   undefined ->
+                       <<"not found">>;
+                   Path0 ->
+                       Path = list_to_binary(Path0),
+                       <<SysPath/binary, Path/binary>>
+               end,
+     Info#{ memory_total := emqx_mgmt_util:kmg(Total)
+          , memory_used := emqx_mgmt_util:kmg(Used)
+          , sys_path => SysPath
+          , config_path => ConfigPath
+          , log_path => LogPath}.
 
+log_path() ->
+    Configs = logger:get_handler_config(),
+    get_log_path(Configs).
+
+get_log_path([#{id := file} = LoggerConfig | _LoggerConfigs]) ->
+    Config = maps:get(config, LoggerConfig),
+    maps:get(file, Config);
+get_log_path([_LoggerConfig | LoggerConfigs]) ->
+    get_log_path(LoggerConfigs);
+get_log_path([]) ->
+    undefined.

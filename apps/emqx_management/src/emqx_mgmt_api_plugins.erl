@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -106,10 +106,8 @@ format({Node, Plugins}) ->
 
 format(#plugin{name = Name,
                descr = Descr,
-               active = Active,
-               type = Type}) ->
+               active = Active}) ->
     #{name => Name,
       description => iolist_to_binary(Descr),
-      active => Active,
-      type => Type}.
+      active => Active}.
 

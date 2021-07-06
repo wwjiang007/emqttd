@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@
         , on_client_connected/2
         , on_client_disconnected/3
         , on_client_authenticate/2
-        , on_client_check_acl/4
+        , on_client_authorize/4
         , on_client_subscribe/3
         , on_client_unsubscribe/3
         ]).
@@ -109,7 +109,7 @@ on_client_authenticate(ClientInfo, AuthResult) ->
             {ok, AuthResult}
     end.
 
-on_client_check_acl(ClientInfo, PubSub, Topic, Result) ->
+on_client_authorize(ClientInfo, PubSub, Topic, Result) ->
     Bool = Result == allow,
     Type = case PubSub of
                publish -> 'PUBLISH';
@@ -120,7 +120,7 @@ on_client_check_acl(ClientInfo, PubSub, Topic, Result) ->
             topic => Topic,
             result => Bool
            },
-    case call_fold('client.check_acl', Req,
+    case call_fold('client.authorize', Req,
                    fun merge_responsed_bool/2) of
         {StopOrOk, #{result := Result0}} when is_boolean(Result0) ->
             NResult = case Result0 of true -> allow; _ -> deny end,
@@ -254,7 +254,9 @@ clientinfo(ClientInfo =
       protocol => stringfy(Protocol),
       mountpoint => maybe(Mountpoiont),
       is_superuser => maps:get(is_superuser, ClientInfo, false),
-      anonymous => maps:get(anonymous, ClientInfo, true)}.
+      anonymous => maps:get(anonymous, ClientInfo, true),
+      cn => maybe(maps:get(cn, ClientInfo, undefined)),
+      dn => maybe(maps:get(dn, ClientInfo, undefined))}.
 
 message(#message{id = Id, qos = Qos, from = From, topic = Topic, payload = Payload, timestamp = Ts}) ->
     #{node => stringfy(node()),

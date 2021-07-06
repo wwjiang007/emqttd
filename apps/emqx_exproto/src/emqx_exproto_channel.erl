@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -305,7 +305,7 @@ handle_call({subscribe, TopicFilter, Qos},
                          conn_state = connected,
                          clientinfo = ClientInfo}) ->
     case is_acl_enabled(ClientInfo) andalso
-         emqx_access_control:check_acl(ClientInfo, subscribe, TopicFilter) of
+         emqx_access_control:authorize(ClientInfo, subscribe, TopicFilter) of
         deny ->
             {reply, {error, ?RESP_PERMISSION_DENY, <<"ACL deny">>}, Channel};
         _ ->
@@ -325,7 +325,7 @@ handle_call({publish, Topic, Qos, Payload},
                                     = #{clientid := From,
                                         mountpoint := Mountpoint}}) ->
     case is_acl_enabled(ClientInfo) andalso
-         emqx_access_control:check_acl(ClientInfo, publish, Topic) of
+         emqx_access_control:authorize(ClientInfo, publish, Topic) of
         deny ->
             {reply, {error, ?RESP_PERMISSION_DENY, <<"ACL deny">>}, Channel};
         _ ->

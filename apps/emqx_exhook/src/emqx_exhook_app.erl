@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -88,7 +88,7 @@ init_hooks_cnter() ->
     try
         _ = ets:new(?CNTER, [named_table, public]), ok
     catch
-        exit:badarg:_ ->
+        error:badarg:_ ->
             ok
     end.
 

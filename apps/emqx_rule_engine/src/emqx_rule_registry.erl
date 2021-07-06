@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 -behaviour(gen_server).
 
 -include("rule_engine.hrl").
+-include_lib("emqx/include/emqx.hrl").
 -include_lib("emqx/include/logger.hrl").
 -include_lib("stdlib/include/qlc.hrl").
 
@@ -63,6 +64,8 @@
 %% Resource Types
 -export([ get_resource_types/0
         , find_resource_type/1
+        , find_rules_depends_on_resource/1
+        , find_enabled_rules_depends_on_resource/1
         , register_resource_types/1
         , unregister_resource_types_of/1
         ]).
@@ -91,14 +94,12 @@
 
 -define(REGISTRY, ?MODULE).
 
-%% Statistics
--define(STATS,
-        [ {?RULE_TAB, 'rules.count', 'rules.max'}
-        , {?ACTION_TAB, 'actions.count', 'actions.max'}
-        , {?RES_TAB, 'resources.count', 'resources.max'}
-        ]).
-
 -define(T_CALL, 10000).
+
+-rlog_shard({?RULE_ENGINE_SHARD, ?RULE_TAB}).
+-rlog_shard({?RULE_ENGINE_SHARD, ?ACTION_TAB}).
+-rlog_shard({?RULE_ENGINE_SHARD, ?RES_TAB}).
+-rlog_shard({?RULE_ENGINE_SHARD, ?RES_TYPE_TAB}).
 
 %%------------------------------------------------------------------------------
 %% Mnesia bootstrap
@@ -179,7 +180,7 @@ get_rules_ordered_by_ts() ->
         Query = qlc:q([E || E <- mnesia:table(?RULE_TAB)]),
         qlc:e(qlc:keysort(#rule.created_at, Query, [{order, ascending}]))
     end,
-    {atomic, List} = mnesia:transaction(F),
+    {atomic, List} = ekka_mnesia:transaction(?RULE_ENGINE_SHARD, F),
     List.
 
 -spec(get_rules_for(Topic :: binary()) -> list(emqx_rule_engine:rule())).
@@ -354,7 +355,7 @@ find_resource_params(Id) ->
         [] -> not_found
     end.
 
--spec(remove_resource(emqx_rule_engine:resource() | emqx_rule_engine:resource_id()) -> ok).
+-spec(remove_resource(emqx_rule_engine:resource() | emqx_rule_engine:resource_id()) -> ok | {error, term()}).
 remove_resource(Resource) when is_record(Resource, resource) ->
     trans(fun delete_resource/1, [Resource#resource.id]);
 
@@ -368,19 +369,34 @@ remove_resource_params(ResId) ->
 
 %% @private
 delete_resource(ResId) ->
-    lists:foreach(fun(#rule{id = Id, actions = Actions}) ->
-        lists:foreach(
-            fun (#action_instance{args = #{<<"$resource">> := ResId1}})
-                when ResId =:= ResId1 ->
-                    throw({dependency_exists, {rule, Id}});
-                (_) -> ok
-            end, Actions)
-    end, get_rules()),
-    mnesia:delete(?RES_TAB, ResId, write).
+    case find_enabled_rules_depends_on_resource(ResId) of
+        [] -> mnesia:delete(?RES_TAB, ResId, write);
+        Rules ->
+            {error, {dependent_rules_exists, [Id || #rule{id = Id} <- Rules]}}
+    end.
 
 %% @private
 insert_resource(Resource) ->
     mnesia:write(?RES_TAB, Resource, write).
+
+find_enabled_rules_depends_on_resource(ResId) ->
+    [R || #rule{enabled = true} = R <- find_rules_depends_on_resource(ResId)].
+
+find_rules_depends_on_resource(ResId) ->
+    lists:foldl(fun(#rule{actions = Actions} = R, Rules) ->
+        case search_action_despends_on_resource(ResId, Actions) of
+            false -> Rules;
+            {value, _} -> [R | Rules]
+        end
+    end, [], get_rules()).
+
+search_action_despends_on_resource(ResId, Actions) ->
+    lists:search(fun
+        (#action_instance{args = #{<<"$resource">> := ResId0}}) ->
+            ResId0 =:= ResId;
+        (_) ->
+            false
+    end, Actions).
 
 %%------------------------------------------------------------------------------
 %% Resource Type Management
@@ -425,8 +441,6 @@ delete_resource_type(Type) ->
 %%------------------------------------------------------------------------------
 
 init([]) ->
-    %% Enable stats timer
-    ok = emqx_stats:update_interval(rule_registery_stats, fun update_stats/0),
     _TableId = ets:new(?KV_TAB, [named_table, set, public, {write_concurrency, true},
                                  {read_concurrency, true}]),
     {ok, #{}}.
@@ -452,7 +466,7 @@ handle_info(Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, _State) ->
-    emqx_stats:cancel_update(rule_registery_stats).
+    ok.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -461,20 +475,20 @@ code_change(_OldVsn, State, _Extra) ->
 %% Private functions
 %%------------------------------------------------------------------------------
 
-update_stats() ->
-    lists:foreach(
-      fun({Tab, Stat, MaxStat}) ->
-              Size = mnesia:table_info(Tab, size),
-              emqx_stats:setstat(Stat, MaxStat, Size)
-      end, ?STATS).
-
 get_all_records(Tab) ->
     %mnesia:dirty_match_object(Tab, mnesia:table_info(Tab, wild_pattern)).
-    ets:tab2list(Tab).
+    %% Wrapping ets to a r/o transaction to avoid reading inconsistent
+    %% data during shard bootstrap
+    {atomic, Ret} =
+        ekka_mnesia:ro_transaction(?RULE_ENGINE_SHARD,
+                                   fun() ->
+                                           ets:tab2list(Tab)
+                                   end),
+    Ret.
 
 trans(Fun) -> trans(Fun, []).
 trans(Fun, Args) ->
-    case mnesia:transaction(Fun, Args) of
-        {atomic, ok} -> ok;
+    case ekka_mnesia:transaction(?RULE_ENGINE_SHARD, Fun, Args) of
+        {atomic, Result} -> Result;
         {aborted, Reason} -> error(Reason)
     end.

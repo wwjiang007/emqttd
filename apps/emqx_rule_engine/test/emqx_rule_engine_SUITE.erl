@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -149,11 +149,11 @@ groups() ->
 init_per_suite(Config) ->
     ok = ekka_mnesia:start(),
     ok = emqx_rule_registry:mnesia(boot),
-    start_apps(),
+    ok = emqx_ct_helpers:start_apps([emqx_rule_engine], fun set_special_configs/1),
     Config.
 
 end_per_suite(_Config) ->
-    stop_apps(),
+    emqx_ct_helpers:stop_apps([emqx_rule_engine]),
     ok.
 
 on_resource_create(_id, _) -> #{}.
@@ -706,7 +706,7 @@ t_disable_rule(_Config) ->
                 types=[], params_spec = #{},
                 title = #{en => <<"Simple Action">>},
                 description = #{en => <<"Simple Action">>}}),
-    {ok, #rule{actions = [#action_instance{id = ActInsId0}]}} = emqx_rule_engine:create_rule(
+    {ok, #rule{actions = [#action_instance{}]}} = emqx_rule_engine:create_rule(
         #{id => <<"simple_rule_2">>,
           rawsql => <<"select * from \"t/#\"">>,
           actions => [#{name => 'simple_action_2', args => #{}}]
@@ -2545,41 +2545,13 @@ init_events_counters() ->
 %%------------------------------------------------------------------------------
 %% Start Apps
 %%------------------------------------------------------------------------------
-
-stop_apps() ->
-    stopped = mnesia:stop(),
-    [application:stop(App) || App <- [emqx_rule_engine, emqx]].
-
-start_apps() ->
-    [start_apps(App, SchemaFile, ConfigFile) ||
-        {App, SchemaFile, ConfigFile}
-            <- [{emqx, deps_path(emqx, "priv/emqx.schema"),
-                       deps_path(emqx, "etc/emqx.conf")},
-                {emqx_rule_engine, local_path("priv/emqx_rule_engine.schema"),
-                                   local_path("etc/emqx_rule_engine.conf")}]].
-
-start_apps(App, SchemaFile, ConfigFile) ->
-    read_schema_configs(App, SchemaFile, ConfigFile),
-    set_special_configs(App),
-    {ok, _} = application:ensure_all_started(App).
-
-read_schema_configs(App, SchemaFile, ConfigFile) ->
-    ct:pal("Read configs - SchemaFile: ~p, ConfigFile: ~p", [SchemaFile, ConfigFile]),
-    Schema = cuttlefish_schema:files([SchemaFile]),
-    Conf = conf_parse:file(ConfigFile),
-    NewConfig = cuttlefish_generator:map(Schema, Conf),
-    Vals = proplists:get_value(App, NewConfig, []),
-    [application:set_env(App, Par, Value) || {Par, Value} <- Vals].
-
 deps_path(App, RelativePath) ->
-    %% Note: not lib_dir because etc dir is not sym-link-ed to _build dir
-    %% but priv dir is
-    Path0 = code:priv_dir(App),
+    Path0 = code:lib_dir(App),
     Path = case file:read_link(Path0) of
                {ok, Resolved} -> Resolved;
                {error, _} -> Path0
            end,
-    filename:join([Path, "..", RelativePath]).
+    filename:join([Path, RelativePath]).
 
 local_path(RelativePath) ->
     deps_path(emqx_rule_engine, RelativePath).

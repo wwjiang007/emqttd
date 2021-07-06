@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,4 +17,4 @@
 -define(APP, emqx_retainer).
 -define(TAB, ?APP).
 -record(retained, {topic, msg, expiry_time}).
-
+-define(RETAINER_SHARD, emqx_retainer_shard).

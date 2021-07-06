@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@ cmd(["topics"]) ->
 
 cmd(["clean"]) ->
     Size = mnesia:table_info(?TAB, size),
-    case mnesia:clear_table(?TAB) of
+    case ekka_mnesia:clear_table(?TAB) of
         {atomic, ok} -> emqx_ctl:print("Cleaned ~p retained messages~n", [Size]);
         {aborted, R} -> emqx_ctl:print("Aborted ~p~n", [R])
     end;
@@ -55,4 +55,3 @@ cmd(_) ->
 
 unload() ->
     emqx_ctl:unregister_command(retainer).
-

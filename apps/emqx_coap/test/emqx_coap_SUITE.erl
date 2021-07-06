@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,16 +28,16 @@
 all() -> emqx_ct:all(?MODULE).
 
 init_per_suite(Config) ->
-    emqx_ct_helpers:start_apps([emqx_coap], fun set_sepecial_cfg/1),
+    emqx_ct_helpers:start_apps([emqx_coap], fun set_special_cfg/1),
     Config.
 
-set_sepecial_cfg(emqx_coap) ->
+set_special_cfg(emqx_coap) ->
     Opts = application:get_env(emqx_coap, dtls_opts,[]),
     Opts2 = [{keyfile, emqx_ct_helpers:deps_path(emqx, "etc/certs/key.pem")},
              {certfile, emqx_ct_helpers:deps_path(emqx, "etc/certs/cert.pem")}],
     application:set_env(emqx_coap, dtls_opts, emqx_misc:merge_opts(Opts, Opts2)),
     application:set_env(emqx_coap, enable_stats, true);
-set_sepecial_cfg(_) ->
+set_special_cfg(_) ->
     ok.
 
 end_per_suite(Config) ->
@@ -77,7 +77,7 @@ t_publish_acl_deny(_Config) ->
     emqx:subscribe(Topic),
 
     ok = meck:new(emqx_access_control, [non_strict, passthrough, no_history]),
-    ok = meck:expect(emqx_access_control, check_acl, 3, deny),
+    ok = meck:expect(emqx_access_control, authorize, 3, deny),
     Reply = er_coap_client:request(put, URI, #coap_content{format = <<"application/octet-stream">>, payload = Payload}),
     ?assertEqual({error,forbidden}, Reply),
     ok = meck:unload(emqx_access_control),
@@ -114,13 +114,13 @@ t_observe_acl_deny(_Config) ->
     Topic = <<"abc">>, TopicStr = binary_to_list(Topic),
     Uri = "coap://127.0.0.1/mqtt/"++TopicStr++"?c=client1&u=tom&p=secret",
     ok = meck:new(emqx_access_control, [non_strict, passthrough, no_history]),
-    ok = meck:expect(emqx_access_control, check_acl, 3, deny),
+    ok = meck:expect(emqx_access_control, authorize, 3, deny),
     ?assertEqual({error,forbidden}, er_coap_observer:observe(Uri)),
     [] = emqx:subscribers(Topic),
     ok = meck:unload(emqx_access_control).
 
 t_observe_wildcard(_Config) ->
-    Topic = <<"+/b">>, TopicStr = http_uri:encode(binary_to_list(Topic)),
+    Topic = <<"+/b">>, TopicStr = emqx_http_lib:uri_encode(binary_to_list(Topic)),
     Payload = <<"123">>,
     Uri = "coap://127.0.0.1/mqtt/"++TopicStr++"?c=client1&u=tom&p=secret",
     {ok, Pid, N, Code, Content} = er_coap_observer:observe(Uri),
@@ -130,7 +130,7 @@ t_observe_wildcard(_Config) ->
     ?assert(is_pid(SubPid)),
 
     %% Publish a message
-    emqx:publish(emqx_message:make(Topic, Payload)),
+    emqx:publish(emqx_message:make(<<"a/b">>, Payload)),
 
     Notif = receive_notification(),
     ?LOGT("observer get Notif=~p", [Notif]),
@@ -143,7 +143,7 @@ t_observe_wildcard(_Config) ->
     [] = emqx:subscribers(Topic).
 
 t_observe_pub(_Config) ->
-    Topic = <<"+/b">>, TopicStr = http_uri:encode(binary_to_list(Topic)),
+    Topic = <<"+/b">>, TopicStr = emqx_http_lib:uri_encode(binary_to_list(Topic)),
     Uri = "coap://127.0.0.1/mqtt/"++TopicStr++"?c=client1&u=tom&p=secret",
     {ok, Pid, N, Code, Content} = er_coap_observer:observe(Uri),
     ?LOGT("observer Pid=~p, N=~p, Code=~p, Content=~p", [Pid, N, Code, Content]),
@@ -152,7 +152,7 @@ t_observe_pub(_Config) ->
     ?assert(is_pid(SubPid)),
 
     Topic2 = <<"a/b">>, Payload2 = <<"UFO">>,
-    TopicStr2 = http_uri:encode(binary_to_list(Topic2)),
+    TopicStr2 = emqx_http_lib:uri_encode(binary_to_list(Topic2)),
     URI2 = "coap://127.0.0.1/mqtt/"++TopicStr2++"?c=client1&u=tom&p=secret",
 
     Reply2 = er_coap_client:request(put, URI2, #coap_content{format = <<"application/octet-stream">>, payload = Payload2}),
@@ -164,7 +164,7 @@ t_observe_pub(_Config) ->
     ?assertEqual(Payload2, PayloadRecv2),
 
     Topic3 = <<"j/b">>, Payload3 = <<"ET629">>,
-    TopicStr3 = http_uri:encode(binary_to_list(Topic3)),
+    TopicStr3 = emqx_http_lib:uri_encode(binary_to_list(Topic3)),
     URI3 = "coap://127.0.0.1/mqtt/"++TopicStr3++"?c=client2&u=mike&p=guess",
     Reply3 = er_coap_client:request(put, URI3, #coap_content{format = <<"application/octet-stream">>, payload = Payload3}),
     {ok,changed, _} = Reply3,
@@ -186,7 +186,7 @@ t_one_clientid_sub_2_topics(_Config) ->
     [SubPid] = emqx:subscribers(Topic1),
     ?assert(is_pid(SubPid)),
 
-    Topic2 = <<"x/y">>, TopicStr2 = http_uri:encode(binary_to_list(Topic2)),
+    Topic2 = <<"x/y">>, TopicStr2 = emqx_http_lib:uri_encode(binary_to_list(Topic2)),
     Payload2 = <<"456">>,
     Uri2 = "coap://127.0.0.1/mqtt/"++TopicStr2++"?c=client1&u=tom&p=secret",
     {ok, Pid2, N2, Code2, Content2} = er_coap_observer:observe(Uri2),
@@ -217,7 +217,7 @@ t_invalid_parameter(_Config) ->
     %% "cid=client2" is invaid
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     Topic3 = <<"a/b">>, Payload3 = <<"ET629">>,
-    TopicStr3 = http_uri:encode(binary_to_list(Topic3)),
+    TopicStr3 = emqx_http_lib:uri_encode(binary_to_list(Topic3)),
     URI3 = "coap://127.0.0.1/mqtt/"++TopicStr3++"?cid=client2&u=tom&p=simple",
     Reply3 = er_coap_client:request(put, URI3, #coap_content{format = <<"application/octet-stream">>, payload = Payload3}),
     ?assertMatch({error,bad_request}, Reply3),
@@ -266,11 +266,18 @@ t_kick_1(_Config) ->
 
 % mqtt connection kicked by coap with same client id
 t_acl(Config) ->
-    %% Update acl file and reload mod_acl_internal
-    Path = filename:join([testdir(proplists:get_value(data_dir, Config)), "deny.conf"]),
-    ok = file:write_file(Path, <<"{deny, {user, \"coap\"}, publish, [\"abc\"]}.">>),
-    OldPath = emqx:get_env(acl_file),
-    emqx_mod_acl_internal:reload([{acl_file, Path}]),
+    OldPath = emqx:get_env(plugins_etc_dir),
+    application:set_env(emqx, plugins_etc_dir,
+                        emqx_ct_helpers:deps_path(emqx_authz, "test")),
+    Conf = #{<<"authz">> =>
+             #{<<"rules">> =>
+               [#{<<"principal">> =>#{<<"username">> => <<"coap">>},
+                  <<"permission">> => deny,
+                  <<"topics">> => [<<"abc">>],
+                  <<"action">> => <<"publish">>}
+               ]}},
+    ok = file:write_file(filename:join(emqx:get_env(plugins_etc_dir), 'authz.conf'), jsx:encode(Conf)),
+    application:ensure_all_started(emqx_authz),
 
     emqx:subscribe(<<"abc">>),
     URI = "coap://127.0.0.1/mqtt/adbc?c=client1&u=coap&p=secret",
@@ -282,9 +289,10 @@ t_acl(Config) ->
         ok
     end,
 
-    application:set_env(emqx, acl_file, OldPath),
-    file:delete(Path),
-    emqx_mod_acl_internal:reload([{acl_file, OldPath}]).
+    ok = emqx_hooks:del('client.authorize', {emqx_authz, authorize}),
+    file:delete(filename:join(emqx:get_env(plugins_etc_dir), 'authz.conf')),
+    application:set_env(emqx, plugins_etc_dir, OldPath),
+    application:stop(emqx_authz).
 
 t_stats(_) ->
     ok.

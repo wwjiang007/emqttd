@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2020-2021 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -38,7 +38,6 @@
         , trace/1
         , log/1
         , mgmt/1
-        , data/1
         , acl/1
         ]).
 
@@ -116,13 +115,7 @@ mgmt(_) ->
 
 status([]) ->
     {InternalStatus, _ProvidedStatus} = init:get_status(),
-    emqx_ctl:print("Node ~p ~s is ~p~n", [node(), emqx_app:get_release(), InternalStatus]),
-    case lists:keysearch(?APP, 1, application:which_applications()) of
-        false ->
-            emqx_ctl:print("Application ~s is not running~n", [?APP]);
-        {value, {?APP, _Desc, Vsn}} ->
-            emqx_ctl:print("Application ~s ~s is running~n", [?APP, Vsn])
-    end;
+    emqx_ctl:print("Node ~p ~s is ~p~n", [node(), emqx_app:get_release(), InternalStatus]);
 status(_) ->
      emqx_ctl:usage("status", "Show broker status").
 
@@ -549,36 +542,6 @@ stop_listener(#{listen_on := ListenOn} = Listener, _Input) ->
             emqx_ctl:print("Failed to stop ~s listener on ~s: ~0p~n",
                            [ID, ListenOnStr, Reason])
     end.
-
-%%--------------------------------------------------------------------
-%% @doc data Command
-
-data(["export"]) ->
-    case emqx_mgmt_data_backup:export() of
-        {ok, #{filename := Filename}} ->
-            emqx_ctl:print("The emqx data has been successfully exported to ~s.~n", [Filename]);
-        {error, Reason} ->
-            emqx_ctl:print("The emqx data export failed due to ~p.~n", [Reason])
-    end;
-
-data(["import", Filename]) ->
-    data(["import", Filename, "--env", "{}"]);
-data(["import", Filename, "--env", Env]) ->
-    case emqx_mgmt_data_backup:import(Filename, Env) of
-        ok ->
-            emqx_ctl:print("The emqx data has been imported successfully.~n");
-        {error, import_failed} ->
-            emqx_ctl:print("The emqx data import failed.~n");
-        {error, unsupported_version} ->
-            emqx_ctl:print("The emqx data import failed: Unsupported version.~n");
-        {error, Reason} ->
-            emqx_ctl:print("The emqx data import failed: ~0p while reading ~s.~n", [Reason, Filename])
-    end;
-
-data(_) ->
-    emqx_ctl:usage([{"data import <File> [--env '<json>']",
-                     "Import data from the specified file, possibly with overrides"},
-                    {"data export", "Export data"}]).
 
 %%--------------------------------------------------------------------
 %% @doc acl Command
